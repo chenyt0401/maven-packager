@@ -1,12 +1,32 @@
 use crate::error::AppResult;
 use crate::models::build::{BuildCommandPayload, StartBuildPayload};
+use crate::services::app_logger;
 use crate::services::command_builder;
 use crate::services::process_runner::{self, BuildProcessState};
-use tauri::{State, Window};
+use tauri::{AppHandle, State, Window};
 
 #[tauri::command]
-pub fn build_command_preview(payload: BuildCommandPayload) -> AppResult<String> {
-    Ok(command_builder::build_command_preview(payload))
+pub fn build_command_preview(app: AppHandle, payload: BuildCommandPayload) -> AppResult<String> {
+    let project_root = payload.options.project_root.clone();
+    let module_path = payload.options.selected_module_path.clone();
+    let goals = payload.options.goals.join(" ");
+    let command = command_builder::build_command_preview(payload);
+    app_logger::log_info(
+        &app,
+        "build.preview",
+        format!(
+            "project_root={}, module_path={}, goals={}, command={}",
+            project_root,
+            if module_path.is_empty() {
+                "<all>"
+            } else {
+                module_path.as_str()
+            },
+            goals,
+            command
+        ),
+    );
+    Ok(command)
 }
 
 #[tauri::command]

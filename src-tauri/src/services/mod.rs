@@ -1,3 +1,4 @@
+pub mod app_logger;
 pub mod command_builder;
 pub mod env_detector;
 pub mod pom_parser;

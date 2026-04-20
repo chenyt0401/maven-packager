@@ -1,17 +1,17 @@
-import { create } from 'zustand'
-import { api, createDefaultBuildOptions, selectProjectDirectory } from '../services/tauri-api'
+import {create} from 'zustand'
+import {api, createDefaultBuildOptions, selectProjectDirectory} from '../services/tauri-api'
 import type {
-  BuildEnvironment,
-  BuildFinishedEvent,
-  BuildHistoryRecord,
-  BuildLogEvent,
-  BuildOptions,
-  BuildStatus,
-  BuildTemplate,
-  EnvironmentSettings,
-  MavenModule,
-  MavenProject,
-  PersistedBuildStatus,
+    BuildEnvironment,
+    BuildFinishedEvent,
+    BuildHistoryRecord,
+    BuildLogEvent,
+    BuildOptions,
+    BuildStatus,
+    BuildTemplate,
+    EnvironmentSettings,
+    MavenModule,
+    MavenProject,
+    PersistedBuildStatus,
 } from '../types/domain'
 
 interface AppState {
@@ -119,6 +119,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       const settings = await api.loadEnvironmentSettings()
       if (settings.lastProjectPath) {
         await get().parseProjectPath(settings.lastProjectPath)
+      } else {
+        const environment = await api.detectEnvironment('')
+        set({ environment })
       }
     } catch {
       // 浏览器预览或首次启动时没有本地设置，保持空工作台即可。
@@ -265,9 +268,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     const { project } = get()
     try {
       await api.saveEnvironmentSettings(settings)
+      const environment = await api.detectEnvironment(project?.rootPath ?? '')
+      set({ environment })
       if (project) {
-        const environment = await api.detectEnvironment(project.rootPath)
-        set({ environment })
         await get().refreshCommandPreview()
       }
     } catch (error) {
