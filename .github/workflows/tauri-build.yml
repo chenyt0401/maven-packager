@@ -1,9 +1,11 @@
-name: Build Windows App (EXE + MSI + Portable)
+name: Build Windows App (NSIS + MSI + Portable)
 
 on:
   push:
-    branches: [ main ]
-    tags: [ "v*" ]
+    branches:
+      - main
+    tags:
+      - "v*"
   workflow_dispatch:
 
 permissions:
@@ -12,25 +14,27 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
 
-      - name: Setup Node.js 24
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js (LTS)
         uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: lts/*
+          cache: npm
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install Dependencies
-        run: npm install
+        run: npm ci
 
       - name: Install WiX Toolset (for MSI)
-        run: choco install wixtoolset
+        run: choco install wixtoolset -y
 
-      - name: Build Draft App
-        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+      - name: Build Tauri App (NSIS + MSI)
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -38,25 +42,58 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           CI: true
         with:
-          tagName: v1.0.0-auto-build
-          releaseName: "自动构建版本"
-          releaseDraft: true
-          prerelease: true
-          args: --ci --bundles nsis
+          tagName: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'windows-auto-build' }}
+          releaseName: ${{ startsWith(github.ref, 'refs/tags/') && format('Maven Packager {0}', github.ref_name) || 'Maven Packager Auto Build' }}
+          releaseDraft: ${{ !startsWith(github.ref, 'refs/tags/') }}
+          prerelease: ${{ !startsWith(github.ref, 'refs/tags/') }}
+          args: --ci --bundles nsis,msi
           updaterJsonPreferNsis: true
+          uploadPlainBinary: true
 
-      - name: Build Release App
-        if: ${{ startsWith(github.ref, 'refs/tags/') }}
-        uses: tauri-apps/tauri-action@v0
+      - name: Prepare Portable EXE
+        shell: powershell
+        run: |
+          $configPath = "src-tauri/tauri.conf.json"
+
+          if (-not (Test-Path $configPath)) {
+            Write-Error "未找到 $configPath"
+            exit 1
+          }
+
+          $config = Get-Content $configPath -Raw | ConvertFrom-Json
+          $productName = $config.productName
+
+          if (-not $productName) {
+            Write-Error "tauri.conf.json 中未找到 productName"
+            exit 1
+          }
+
+          $safeName = $productName -replace '[\\\/:\*\?"<>\|]', ''
+          $sourceExe = "src-tauri\target\release\$safeName.exe"
+
+          if (-not (Test-Path $sourceExe)) {
+            Write-Error "未找到构建后的 EXE: $sourceExe"
+            exit 1
+          }
+
+          New-Item -ItemType Directory -Force -Path "portable-dist" | Out-Null
+          $portableName = "${safeName}_portable_x64.exe"
+          Copy-Item $sourceExe "portable-dist\$portableName" -Force
+
+          Write-Host "Portable EXE prepared: portable-dist\$portableName"
+
+      - name: Upload Portable EXE Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-portable-exe
+          path: portable-dist/*.exe
+
+      - name: Upload Portable EXE to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'windows-auto-build' }}
+          draft: ${{ !startsWith(github.ref, 'refs/tags/') }}
+          prerelease: ${{ !startsWith(github.ref, 'refs/tags/') }}
+          files: portable-dist/*.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          CI: true
-        with:
-          tagName: ${{ github.ref_name }}
-          releaseName: "Maven Packager ${{ github.ref_name }}"
-          releaseDraft: false
-          prerelease: false
-          args: --ci --bundles nsis
-          updaterJsonPreferNsis: true
