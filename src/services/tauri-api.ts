@@ -1,5 +1,6 @@
 import {invoke} from '@tauri-apps/api/core'
 import {listen} from '@tauri-apps/api/event'
+import {BundleType, getBundleType, getVersion} from '@tauri-apps/api/app'
 import {open} from '@tauri-apps/plugin-dialog'
 import {relaunch} from '@tauri-apps/plugin-process'
 import {check, type DownloadEvent, type Update} from '@tauri-apps/plugin-updater'
@@ -30,17 +31,48 @@ const requireTauri = () => {
   }
 }
 
+const getWindowsUpdaterTarget = async () => {
+  try {
+    const bundleType = await getBundleType()
+
+    if (bundleType === BundleType.Nsis) {
+      return 'windows-x86_64-nsis'
+    }
+
+    if (bundleType === BundleType.Msi) {
+      return 'windows-x86_64-msi'
+    }
+  } catch {
+    return undefined
+  }
+
+  return undefined
+}
+
 export async function checkForAppUpdate(): Promise<Update | null> {
   requireTauri()
-  return check({ timeout: 30000 })
+  const target = await getWindowsUpdaterTarget()
+
+  return check({
+    timeout: 30000,
+    ...(target ? { target } : {}),
+  })
+}
+
+export async function getCurrentAppVersion(): Promise<string> {
+  requireTauri()
+  return getVersion()
 }
 
 export async function installAppUpdate(
   update: Update,
   onEvent: (event: DownloadEvent) => void,
+  onDownloaded?: () => void,
 ): Promise<void> {
   requireTauri()
-  await update.downloadAndInstall(onEvent, { timeout: 120000 })
+  await update.download(onEvent, { timeout: 300000 })
+  onDownloaded?.()
+  await update.install()
   await relaunch()
 }
 

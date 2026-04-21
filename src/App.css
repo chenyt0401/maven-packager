@@ -183,6 +183,14 @@
   margin-bottom: 8px;
 }
 
+.update-checker {
+  flex: 0 0 auto;
+}
+
+.current-version {
+  white-space: nowrap;
+}
+
 .update-modal-content {
   width: 100%;
 }
