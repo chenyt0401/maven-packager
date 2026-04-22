@@ -1,6 +1,14 @@
-import {Button, Card, Input, Modal, Space, Tag, Typography} from 'antd'
-import {CopyOutlined, PlayCircleOutlined, ReloadOutlined, SaveOutlined, StopOutlined} from '@ant-design/icons'
+import {Button, Card, Input, List, Modal, Space, Tag, Typography} from 'antd'
+import {
+  CopyOutlined,
+  FolderOpenOutlined,
+  PlayCircleOutlined,
+  ReloadOutlined,
+  SaveOutlined,
+  StopOutlined
+} from '@ant-design/icons'
 import {useState} from 'react'
+import {api} from '../../services/tauri-api'
 import {useAppStore} from '../../store/useAppStore'
 import type {BuildStatus} from '../../types/domain'
 
@@ -23,9 +31,20 @@ const statusColor: Record<BuildStatus, string> = {
   CANCELLED: 'warning',
 }
 
+const formatSize = (size: number) => {
+  if (size >= 1024 * 1024) {
+    return `${(size / 1024 / 1024).toFixed(1)} MB`
+  }
+  if (size >= 1024) {
+    return `${(size / 1024).toFixed(1)} KB`
+  }
+  return `${size} B`
+}
+
 export function CommandPreview() {
   const buildOptions = useAppStore((state) => state.buildOptions)
   const buildStatus = useAppStore((state) => state.buildStatus)
+  const artifacts = useAppStore((state) => state.artifacts)
   const durationMs = useAppStore((state) => state.durationMs)
   const project = useAppStore((state) => state.project)
   const selectedModules = useAppStore((state) => state.selectedModules)
@@ -103,6 +122,42 @@ export function CommandPreview() {
           value={buildOptions.editableCommand}
           onChange={(event) => setEditableCommand(event.target.value)}
         />
+        {(buildStatus === 'SUCCESS' || artifacts.length > 0) ? (
+          <div className="artifact-section">
+            <div className="artifact-section-title">
+              <Title level={5} className="command-editor-title">构建产物</Title>
+              <Text type="secondary">{artifacts.length > 0 ? `已发现 ${artifacts.length} 个 jar/war` : '未扫描到 jar/war 产物'}</Text>
+            </div>
+            {artifacts.length > 0 ? (
+              <List
+                size="small"
+                dataSource={artifacts}
+                renderItem={(artifact) => (
+                  <List.Item
+                    actions={[
+                      <Button
+                        key="open"
+                        icon={<FolderOpenOutlined />}
+                        size="small"
+                        onClick={() => void api.openPathInExplorer(artifact.path)}
+                      >
+                        定位
+                      </Button>,
+                    ]}
+                  >
+                    <Space direction="vertical" size={2} className="artifact-item">
+                      <Text strong ellipsis={{ tooltip: artifact.path }}>{artifact.fileName}</Text>
+                      <Text type="secondary" className="artifact-meta">
+                        {formatSize(artifact.sizeBytes)}
+                        {artifact.modulePath ? ` · ${artifact.modulePath}` : ''}
+                      </Text>
+                    </Space>
+                  </List.Item>
+                )}
+              />
+            ) : null}
+          </div>
+        ) : null}
       </Space>
       <Modal
         title="保存常用模板"

@@ -8,7 +8,7 @@ use tauri::AppHandle;
 pub fn list(app: &AppHandle) -> AppResult<Vec<BuildTemplate>> {
     let connection = open_database(app)?;
     let mut statement = connection
-        .prepare("SELECT payload FROM build_templates ORDER BY name ASC")
+        .prepare("SELECT payload FROM build_templates ORDER BY updated_at DESC, name ASC")
         .map_err(|error| format!("无法读取常用模板：{}", error))?;
     let rows = statement
         .query_map([], |row| row.get::<_, String>(0))

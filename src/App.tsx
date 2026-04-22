@@ -1,7 +1,13 @@
-import {useEffect} from 'react'
+import {useEffect, useState} from 'react'
 import type {TabsProps} from 'antd'
-import {App as AntApp, ConfigProvider, Layout, Space, Tabs, Tag, theme, Typography} from 'antd'
-import {BranchesOutlined, FolderOutlined} from '@ant-design/icons'
+import {App as AntApp, ConfigProvider, Layout, Menu, Space, Tabs, Tag, theme, Typography} from 'antd'
+import {
+  AppstoreAddOutlined,
+  BranchesOutlined,
+  FolderOpenOutlined,
+  FolderOutlined,
+  NodeIndexOutlined,
+} from '@ant-design/icons'
 import {AdvancedOptionsPanel} from './components/AdvancedOptions/AdvancedOptionsPanel'
 import {BuildLogPanel} from './components/BuildLogPanel/BuildLogPanel'
 import {BuildOptionsPanel} from './components/BuildOptions/BuildOptionsPanel'
@@ -20,6 +26,7 @@ import './App.css'
 
 const { Header, Sider, Content } = Layout
 const { Title, Text } = Typography
+type SidebarSection = 'project' | 'git' | 'modules' | 'favorites'
 
 const branchStatusColor = (hasLocalChanges?: boolean, hasRemoteUpdates?: boolean) => {
   if (hasRemoteUpdates) {
@@ -32,11 +39,15 @@ const branchStatusColor = (hasLocalChanges?: boolean, hasRemoteUpdates?: boolean
 }
 
 function App() {
+  const [activeSidebarSection, setActiveSidebarSection] = useState<SidebarSection>('modules')
   const initialize = useAppStore((state) => state.initialize)
   const appendBuildLog = useAppStore((state) => state.appendBuildLog)
   const finishBuild = useAppStore((state) => state.finishBuild)
   const project = useAppStore((state) => state.project)
   const gitStatus = useAppStore((state) => state.gitStatus)
+  const selectedModuleIds = useAppStore((state) => state.selectedModuleIds)
+  const templates = useAppStore((state) => state.templates)
+  const savedProjectPaths = useAppStore((state) => state.savedProjectPaths)
 
   useEffect(() => {
     initialize()
@@ -85,6 +96,37 @@ function App() {
     },
   ]
 
+  const sidebarItems = [
+    {
+      key: 'project',
+      icon: <FolderOpenOutlined />,
+      label: savedProjectPaths.length > 0 ? `项目 · ${savedProjectPaths.length}` : '项目',
+    },
+    {
+      key: 'git',
+      icon: <BranchesOutlined />,
+      label: 'Git',
+      disabled: !project,
+    },
+    {
+      key: 'modules',
+      icon: <NodeIndexOutlined />,
+      label: selectedModuleIds.length > 0 ? `模块 · ${selectedModuleIds.length}` : '模块',
+    },
+    {
+      key: 'favorites',
+      icon: <AppstoreAddOutlined />,
+      label: templates.length > 0 ? `常用 · ${templates.length}` : '常用',
+    },
+  ]
+
+  const sidebarPanel = {
+    project: <ProjectSelector />,
+    git: <GitStatusCard />,
+    modules: <ModuleTreePanel />,
+    favorites: <FavoriteGroupsCard />,
+  }[activeSidebarSection]
+
   return (
     <ConfigProvider
       theme={{
@@ -122,14 +164,18 @@ function App() {
             </Space>
           </Header>
           <Layout className="app-main">
-            <Sider width={340} className="app-sider">
-              <div className="sidebar-stack">
-                <div className="sidebar-main">
-                  <ProjectSelector />
-                  <GitStatusCard />
-                  <ModuleTreePanel />
+            <Sider width={400} className="app-sider">
+              <div className="sidebar-nav-shell">
+                <Menu
+                  className="sidebar-menu"
+                  mode="horizontal"
+                  selectedKeys={[activeSidebarSection]}
+                  items={sidebarItems}
+                  onClick={({ key }) => setActiveSidebarSection(key as SidebarSection)}
+                />
+                <div className="sidebar-panel-host">
+                  {sidebarPanel}
                 </div>
-                <FavoriteGroupsCard />
               </div>
             </Sider>
             <Content className="app-content">

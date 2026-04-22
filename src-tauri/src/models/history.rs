@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use super::build::{BuildArtifact, BuildOptions};
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BuildHistoryRecord {
@@ -14,4 +16,8 @@ pub struct BuildHistoryRecord {
     pub java_home: Option<String>,
     pub maven_home: Option<String>,
     pub use_maven_wrapper: bool,
+    #[serde(default)]
+    pub build_options: Option<BuildOptions>,
+    #[serde(default)]
+    pub artifacts: Vec<BuildArtifact>,
 }

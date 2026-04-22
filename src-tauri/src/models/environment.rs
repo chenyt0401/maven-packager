@@ -7,6 +7,8 @@ pub struct EnvironmentSettings {
     pub maven_home: Option<String>,
     pub use_maven_wrapper: bool,
     pub last_project_path: Option<String>,
+    #[serde(default)]
+    pub project_paths: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

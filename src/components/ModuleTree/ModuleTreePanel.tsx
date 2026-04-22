@@ -16,7 +16,7 @@ const moduleToTreeNode = (moduleItem: MavenModule): DataNode => ({
     <Tooltip title={moduleItem.artifactId}>
       <span>
         <strong>{shortenArtifactId(moduleItem.artifactId)}</strong>
-      <div className="module-meta">{moduleItem.relativePath}</div>
+      <div className="module-meta">{moduleItem.relativePath || '根项目'}</div>
       </span>
     </Tooltip>
   ),

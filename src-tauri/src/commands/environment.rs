@@ -87,7 +87,10 @@ pub fn save_environment_settings(
     current.maven_home = settings.maven_home;
     current.use_maven_wrapper = settings.use_maven_wrapper;
     if settings.last_project_path.is_some() {
-        current.last_project_path = settings.last_project_path;
+        current.last_project_path = settings.last_project_path.clone();
+    }
+    if !settings.project_paths.is_empty() {
+        current.project_paths = normalize_project_paths(settings.project_paths);
     }
     let result = settings_repo::save(&app, current);
     if let Err(error) = &result {
@@ -106,7 +109,8 @@ pub fn save_last_project_path(app: AppHandle, root_path: String) -> AppResult<()
         format!("root_path={}", root_path),
     );
     let mut current = settings_repo::load(&app).unwrap_or_default();
-    current.last_project_path = Some(root_path);
+    current.last_project_path = Some(root_path.clone());
+    upsert_project_path(&mut current.project_paths, root_path);
     let result = settings_repo::save(&app, current);
     if let Err(error) = &result {
         app_logger::log_error(
@@ -116,4 +120,50 @@ pub fn save_last_project_path(app: AppHandle, root_path: String) -> AppResult<()
         );
     }
     result
+}
+
+#[tauri::command]
+pub fn remove_saved_project_path(app: AppHandle, root_path: String) -> AppResult<EnvironmentSettings> {
+    app_logger::log_info(
+        &app,
+        "settings.project.remove.start",
+        format!("root_path={}", root_path),
+    );
+    let mut current = settings_repo::load(&app).unwrap_or_default();
+    current.project_paths = current
+        .project_paths
+        .into_iter()
+        .filter(|path| !same_path(path, &root_path))
+        .collect();
+    if current
+        .last_project_path
+        .as_deref()
+        .is_some_and(|path| same_path(path, &root_path))
+    {
+        current.last_project_path = current.project_paths.first().cloned();
+    }
+    settings_repo::save(&app, current.clone())?;
+    Ok(current)
+}
+
+fn normalize_project_paths(paths: Vec<String>) -> Vec<String> {
+    let mut result = Vec::new();
+    for path in paths {
+        upsert_project_path(&mut result, path);
+    }
+    result
+}
+
+fn upsert_project_path(paths: &mut Vec<String>, path: String) {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+    paths.retain(|item| !same_path(item, trimmed));
+    paths.insert(0, trimmed.to_string());
+    paths.truncate(20);
+}
+
+fn same_path(left: &str, right: &str) -> bool {
+    left.trim().eq_ignore_ascii_case(right.trim())
 }

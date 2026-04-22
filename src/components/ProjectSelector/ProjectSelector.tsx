@@ -1,16 +1,23 @@
-import {Alert, Button, Card, Input, Space, Typography} from 'antd'
-import {FolderOpenOutlined, ReloadOutlined} from '@ant-design/icons'
+import {Alert, Button, Card, Empty, Input, List, Popconfirm, Space, Typography} from 'antd'
+import {DeleteOutlined, FolderOpenOutlined, ReloadOutlined} from '@ant-design/icons'
 import {useState} from 'react'
 import {useAppStore} from '../../store/useAppStore'
 
 const { Text } = Typography
 
+const projectNameFromPath = (path: string) => {
+  const parts = path.split(/[\\/]/).filter(Boolean)
+  return parts.at(-1) ?? path
+}
+
 export function ProjectSelector() {
   const project = useAppStore((state) => state.project)
+  const savedProjectPaths = useAppStore((state) => state.savedProjectPaths)
   const error = useAppStore((state) => state.error)
   const loading = useAppStore((state) => state.loading)
   const chooseProject = useAppStore((state) => state.chooseProject)
   const parseProjectPath = useAppStore((state) => state.parseProjectPath)
+  const removeSavedProject = useAppStore((state) => state.removeSavedProject)
   const [manualPath, setManualPath] = useState('')
 
   const currentPath = project?.rootPath ?? ''
@@ -35,6 +42,7 @@ export function ProjectSelector() {
           onSearch={(value) => {
             if (value.trim()) {
               void parseProjectPath(value.trim())
+              setManualPath('')
             }
           }}
         />
@@ -46,6 +54,56 @@ export function ProjectSelector() {
           <Text type="secondary">请选择包含 pom.xml 的父工程目录。</Text>
         )}
         {error ? <Alert type="error" showIcon message={error} /> : null}
+        <div className="project-list-block">
+          <Text strong>已保存项目</Text>
+          {savedProjectPaths.length === 0 ? (
+            <Empty description="暂无保存项目" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+          ) : (
+            <List
+              className="project-list"
+              dataSource={savedProjectPaths}
+              renderItem={(path) => {
+                const active = path.toLowerCase() === currentPath.toLowerCase()
+                return (
+                  <List.Item
+                    className={`project-list-item ${active ? 'active' : ''}`}
+                    actions={[
+                      <Popconfirm
+                        key="delete"
+                        title="从列表移除该项目？"
+                        okText="移除"
+                        cancelText="取消"
+                        onConfirm={() => void removeSavedProject(path)}
+                      >
+                        <Button
+                          aria-label="移除项目"
+                          danger
+                          icon={<DeleteOutlined />}
+                          size="small"
+                          type="text"
+                        />
+                      </Popconfirm>,
+                    ]}
+                    onClick={() => {
+                      if (!active) {
+                        void parseProjectPath(path)
+                      }
+                    }}
+                  >
+                    <Space direction="vertical" size={2} className="project-list-content">
+                      <Text strong ellipsis={{ tooltip: projectNameFromPath(path) }}>
+                        {projectNameFromPath(path)}
+                      </Text>
+                      <Text type="secondary" className="project-list-path" ellipsis={{ tooltip: path }}>
+                        {path}
+                      </Text>
+                    </Space>
+                  </List.Item>
+                )
+              }}
+            />
+          )}
+        </div>
       </Space>
     </Card>
   )

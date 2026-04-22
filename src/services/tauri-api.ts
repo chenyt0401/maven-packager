@@ -5,6 +5,7 @@ import {open} from '@tauri-apps/plugin-dialog'
 import {relaunch} from '@tauri-apps/plugin-process'
 import {check, type DownloadEvent, type Update} from '@tauri-apps/plugin-updater'
 import type {
+  BuildArtifact,
   BuildCommandPayload,
   BuildEnvironment,
   BuildFinishedEvent,
@@ -128,6 +129,9 @@ export const api = {
   saveLastProjectPath: (rootPath: string) =>
     invoke<void>('save_last_project_path', { rootPath }),
 
+  removeSavedProjectPath: (rootPath: string) =>
+    invoke<EnvironmentSettings>('remove_saved_project_path', { rootPath }),
+
   buildCommandPreview: (payload: BuildCommandPayload) =>
     invoke<string>('build_command_preview', { payload }),
 
@@ -151,6 +155,9 @@ export const api = {
 
   openPathInExplorer: (path: string) =>
     invoke<void>('open_path_in_explorer', { path }),
+
+  scanBuildArtifacts: (projectRoot: string, modulePath: string) =>
+    invoke<BuildArtifact[]>('scan_build_artifacts', { projectRoot, modulePath }),
 
   checkGitStatus: (rootPath: string) =>
     invoke<GitRepositoryStatus>('check_git_status', { rootPath }),

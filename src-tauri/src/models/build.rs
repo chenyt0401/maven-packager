@@ -38,6 +38,17 @@ pub struct StartBuildPayload {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct BuildArtifact {
+    pub path: String,
+    pub file_name: String,
+    pub extension: String,
+    pub size_bytes: u64,
+    pub modified_at: Option<String>,
+    pub module_path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct BuildLogEvent {
     pub build_id: String,
     pub stream: String,

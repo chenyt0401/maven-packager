@@ -1,4 +1,10 @@
-import {FullscreenOutlined} from '@ant-design/icons'
+import {
+  CopyOutlined,
+  FolderOpenOutlined,
+  FullscreenOutlined,
+  PlayCircleOutlined,
+  RollbackOutlined
+} from '@ant-design/icons'
 import {Button, List, Modal, Space, Table, Tag, Tooltip, Typography} from 'antd'
 import type {ColumnsType} from 'antd/es/table'
 import {useState} from 'react'
@@ -40,6 +46,7 @@ const isMultiModuleRecord = (record: BuildHistoryRecord) =>
 export function HistoryTable() {
   const history = useAppStore((state) => state.history)
   const rerunHistory = useAppStore((state) => state.rerunHistory)
+  const rerunHistoryNow = useAppStore((state) => state.rerunHistoryNow)
   const [expanded, setExpanded] = useState(false)
   const [openRecord, setOpenRecord] = useState<BuildHistoryRecord>()
 
@@ -90,14 +97,44 @@ export function HistoryTable() {
       render: (value: number) => `${Math.round(value / 1000)}s`,
     },
     {
+      title: '产物',
+      width: 90,
+      render: (_, record) => {
+        const artifacts = record.artifacts ?? []
+        if (artifacts.length === 0) {
+          return <Text type="secondary">-</Text>
+        }
+        return (
+          <Link onClick={() => void api.openPathInExplorer(artifacts[0].path)}>
+            {artifacts.length} 个
+          </Link>
+        )
+      },
+    },
+    {
       title: '操作',
-      width: 150,
+      width: 260,
       render: (_, record) => (
-        <Space>
-          <Button size="small" onClick={() => rerunHistory(record)}>
-            回填
+        <Space wrap>
+          <Button
+            icon={<PlayCircleOutlined />}
+            size="small"
+            type="primary"
+            onClick={() => void rerunHistoryNow(record)}
+          >
+            重跑
           </Button>
-          <Button size="small" onClick={() => handleOpen(record)}>
+          <Button icon={<RollbackOutlined />} size="small" onClick={() => rerunHistory(record)}>
+            恢复
+          </Button>
+          <Button
+            icon={<CopyOutlined />}
+            size="small"
+            onClick={() => void navigator.clipboard?.writeText(record.command)}
+          >
+            复制
+          </Button>
+          <Button icon={<FolderOpenOutlined />} size="small" onClick={() => handleOpen(record)}>
             打开
           </Button>
         </Space>
@@ -112,7 +149,7 @@ export function HistoryTable() {
       columns={columns}
       dataSource={history}
       pagination={{ pageSize: large ? 12 : 6 }}
-      scroll={{ x: 720 }}
+      scroll={{ x: 900 }}
     />
   )
 

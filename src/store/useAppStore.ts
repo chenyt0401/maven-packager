@@ -1,6 +1,7 @@
 import {create} from 'zustand'
 import {api, createDefaultBuildOptions, selectProjectDirectory} from '../services/tauri-api'
 import type {
+  BuildArtifact,
   BuildEnvironment,
   BuildFinishedEvent,
   BuildHistoryRecord,
@@ -21,12 +22,14 @@ interface AppState {
   selectedModule?: MavenModule
   selectedModules: MavenModule[]
   selectedModuleIds: string[]
+  savedProjectPaths: string[]
   buildOptions: BuildOptions
   buildStatus: BuildStatus
   currentBuildId?: string
   startedAt?: number
   durationMs: number
   logs: BuildLogEvent[]
+  artifacts: BuildArtifact[]
   history: BuildHistoryRecord[]
   templates: BuildTemplate[]
   gitStatus?: GitRepositoryStatus
@@ -38,6 +41,7 @@ interface AppState {
   initialize: () => Promise<void>
   chooseProject: () => Promise<void>
   parseProjectPath: (rootPath: string) => Promise<void>
+  removeSavedProject: (rootPath: string) => Promise<void>
   checkGitStatus: (rootPath?: string) => Promise<void>
   fetchGitUpdates: () => Promise<void>
   pullGitUpdates: () => Promise<void>
@@ -59,7 +63,9 @@ interface AppState {
   finishBuild: (event: BuildFinishedEvent) => void
   loadHistoryAndTemplates: () => Promise<void>
   rerunHistory: (record: BuildHistoryRecord) => void
+  rerunHistoryNow: (record: BuildHistoryRecord) => Promise<void>
   saveTemplate: (name: string) => Promise<void>
+  updateTemplate: (template: BuildTemplate) => Promise<void>
   applyTemplate: (template: BuildTemplate) => void
   deleteTemplate: (templateId: string) => Promise<void>
 }
@@ -112,15 +118,94 @@ const toHistoryStatus = (status: PersistedBuildStatus): BuildStatus => status
 const getErrorMessage = (error: unknown) =>
   error instanceof Error ? error.message : String(error)
 
+const sortTemplates = (templates: BuildTemplate[]) =>
+  [...templates].sort((left, right) => {
+    if (Boolean(left.pinned) !== Boolean(right.pinned)) {
+      return left.pinned ? -1 : 1
+    }
+    return (right.updatedAt ?? '').localeCompare(left.updatedAt ?? '')
+      || left.name.localeCompare(right.name, 'zh-CN')
+  })
+
+const notifyBuildFinished = (status: PersistedBuildStatus, durationMs: number, artifactCount: number) => {
+  const success = status === 'SUCCESS'
+  const title = success ? 'Maven 打包完成' : status === 'CANCELLED' ? 'Maven 打包已停止' : 'Maven 打包失败'
+  const seconds = Math.max(1, Math.round(durationMs / 1000))
+  const body = success
+    ? `耗时 ${seconds}s，发现 ${artifactCount} 个产物。`
+    : `耗时 ${seconds}s，请查看构建日志。`
+
+  try {
+    if ('Notification' in window) {
+      if (Notification.permission === 'granted') {
+        new Notification(title, { body })
+      } else if (Notification.permission === 'default') {
+        void Notification.requestPermission().then((permission) => {
+          if (permission === 'granted') {
+            new Notification(title, { body })
+          }
+        })
+      }
+    }
+  } catch {
+    // 桌面通知不可用时继续播放提示音。
+  }
+
+  try {
+    const AudioContextClass = window.AudioContext
+      ?? (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
+    if (!AudioContextClass) {
+      return
+    }
+    const context = new AudioContextClass()
+    const oscillator = context.createOscillator()
+    const gain = context.createGain()
+    oscillator.type = success ? 'sine' : 'triangle'
+    oscillator.frequency.value = success ? 880 : 220
+    gain.gain.setValueAtTime(0.0001, context.currentTime)
+    gain.gain.exponentialRampToValueAtTime(0.08, context.currentTime + 0.02)
+    gain.gain.exponentialRampToValueAtTime(0.0001, context.currentTime + 0.22)
+    oscillator.connect(gain)
+    gain.connect(context.destination)
+    oscillator.start()
+    oscillator.stop(context.currentTime + 0.24)
+    oscillator.onended = () => void context.close()
+  } catch {
+    // 用户系统禁止音频时忽略。
+  }
+}
+
+const normalizeProjectPaths = (paths: string[]) =>
+  paths.reduce<string[]>((result, path) => {
+    const trimmed = path.trim()
+    if (!trimmed || result.some((item) => item.toLowerCase() === trimmed.toLowerCase())) {
+      return result
+    }
+    return [...result, trimmed]
+  }, [])
+
+const upsertProjectPath = (paths: string[], rootPath: string) => {
+  const trimmed = rootPath.trim()
+  if (!trimmed) {
+    return paths
+  }
+  return [
+    trimmed,
+    ...paths.filter((path) => path.toLowerCase() !== trimmed.toLowerCase()),
+  ].slice(0, 20)
+}
+
 export const useAppStore = create<AppState>((set, get) => ({
   buildOptions: createDefaultBuildOptions(),
   buildStatus: 'IDLE',
   durationMs: 0,
   logs: [],
+  artifacts: [],
   history: [],
   templates: [],
   selectedModules: [],
   selectedModuleIds: [],
+  savedProjectPaths: [],
   gitChecking: false,
   gitPulling: false,
   gitSwitching: false,
@@ -130,6 +215,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     await get().loadHistoryAndTemplates()
     try {
       const settings = await api.loadEnvironmentSettings()
+      const savedProjectPaths = normalizeProjectPaths([
+        ...(settings.projectPaths ?? []),
+        ...(settings.lastProjectPath ? [settings.lastProjectPath] : []),
+      ])
+      set({ savedProjectPaths })
       if (settings.lastProjectPath) {
         await get().parseProjectPath(settings.lastProjectPath)
       } else {
@@ -153,7 +243,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   parseProjectPath: async (rootPath: string) => {
-    set({ loading: true, error: undefined, logs: [], gitStatus: undefined })
+    set({ loading: true, error: undefined, logs: [], artifacts: [], gitStatus: undefined })
     try {
       const [project, environment] = await Promise.all([
         api.parseMavenProject(rootPath),
@@ -172,12 +262,26 @@ export const useAppStore = create<AppState>((set, get) => ({
         durationMs: 0,
       })
       await api.saveLastProjectPath(project.rootPath)
+      set((state) => ({
+        savedProjectPaths: upsertProjectPath(state.savedProjectPaths, project.rootPath),
+      }))
       await get().refreshCommandPreview()
       void get().checkGitStatus(project.rootPath)
     } catch (error) {
       set({ error: getErrorMessage(error) })
     } finally {
       set({ loading: false })
+    }
+  },
+
+  removeSavedProject: async (rootPath: string) => {
+    try {
+      const settings = await api.removeSavedProjectPath(rootPath)
+      set({
+        savedProjectPaths: normalizeProjectPaths(settings.projectPaths ?? []),
+      })
+    } catch (error) {
+      set({ error: getErrorMessage(error) })
     }
   },
 
@@ -363,7 +467,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   updateEnvironment: async (settings: EnvironmentSettings) => {
     const { project } = get()
     try {
-      await api.saveEnvironmentSettings(settings)
+      await api.saveEnvironmentSettings({
+        ...settings,
+        projectPaths: get().savedProjectPaths,
+      })
       const environment = await api.detectEnvironment(project?.rootPath ?? '')
       set({ environment })
       if (project) {
@@ -384,6 +491,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({
       buildStatus: 'RUNNING',
       logs: [],
+      artifacts: [],
       startedAt: Date.now(),
       durationMs: 0,
       error: undefined,
@@ -445,8 +553,19 @@ export const useAppStore = create<AppState>((set, get) => ({
       javaHome: environment?.javaHome,
       mavenHome: environment?.mavenHome,
       useMavenWrapper: environment?.useMavenWrapper ?? false,
+      buildOptions: { ...buildOptions },
+      artifacts: [],
     }
-    void api.saveBuildHistory(record).then(() => get().loadHistoryAndTemplates())
+    void (async () => {
+      const artifacts = event.status === 'SUCCESS'
+        ? await api.scanBuildArtifacts(record.projectRoot, record.modulePath).catch(() => [])
+        : []
+      const recordWithArtifacts = { ...record, artifacts }
+      set({ artifacts })
+      notifyBuildFinished(event.status, event.durationMs, artifacts.length)
+      await api.saveBuildHistory(recordWithArtifacts)
+      await get().loadHistoryAndTemplates()
+    })()
     set({
       buildStatus: toHistoryStatus(event.status),
       durationMs: event.durationMs,
@@ -460,7 +579,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         api.listBuildHistory(),
         api.listTemplates(),
       ])
-      set({ history, templates })
+      set({ history, templates: sortTemplates(templates) })
     } catch {
       set({ history: [], templates: [] })
     }
@@ -471,18 +590,29 @@ export const useAppStore = create<AppState>((set, get) => ({
     const selectedModules = project
       ? findModulesByPaths(project.modules, record.modulePath)
       : []
-    const buildOptions = createDefaultBuildOptions(record.projectRoot, record.modulePath)
+    const buildOptions = record.buildOptions
+      ? { ...record.buildOptions, editableCommand: record.command }
+      : {
+          ...createDefaultBuildOptions(record.projectRoot, record.modulePath),
+          editableCommand: record.command,
+        }
     set({
       selectedModule: selectedModules[0],
       selectedModules,
       selectedModuleIds: selectedModules.map((moduleItem) => moduleItem.id),
-      buildOptions: {
-        ...buildOptions,
-        editableCommand: record.command,
-      },
+      buildOptions,
       buildStatus: 'IDLE',
       durationMs: record.durationMs,
+      artifacts: record.artifacts ?? [],
     })
+  },
+
+  rerunHistoryNow: async (record: BuildHistoryRecord) => {
+    if (get().project?.rootPath !== record.projectRoot) {
+      await get().parseProjectPath(record.projectRoot)
+    }
+    get().rerunHistory(record)
+    await get().startBuild()
   },
 
   saveTemplate: async (name: string) => {
@@ -505,7 +635,13 @@ export const useAppStore = create<AppState>((set, get) => ({
       useMavenWrapper: environment?.useMavenWrapper ?? false,
       javaHome: environment?.javaHome,
       mavenHome: environment?.mavenHome,
+      pinned: false,
     }
+    await api.saveTemplate(template)
+    await get().loadHistoryAndTemplates()
+  },
+
+  updateTemplate: async (template: BuildTemplate) => {
     await api.saveTemplate(template)
     await get().loadHistoryAndTemplates()
   },
@@ -530,6 +666,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         skipTests: template.skipTests,
         customArgs: template.customArgs,
       },
+      artifacts: [],
     }))
     void get().refreshCommandPreview()
   },

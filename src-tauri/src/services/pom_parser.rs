@@ -26,7 +26,11 @@ pub fn parse_maven_project(root_path: &str) -> AppResult<MavenProject> {
     }
 
     let root_pom_data = parse_pom_file(&root_pom)?;
-    let modules = parse_child_modules(&root, &root, &root_pom_data.modules);
+    let modules = if root_pom_data.modules.is_empty() {
+        vec![root_as_module(&root, &root_pom, &root_pom_data)]
+    } else {
+        parse_child_modules(&root, &root, &root_pom_data.modules)
+    };
 
     Ok(MavenProject {
         root_path: path_to_string(&root),
@@ -37,6 +41,21 @@ pub fn parse_maven_project(root_path: &str) -> AppResult<MavenProject> {
         packaging: root_pom_data.packaging,
         modules,
     })
+}
+
+fn root_as_module(root: &Path, root_pom: &Path, parsed: &ParsedPom) -> MavenModule {
+    MavenModule {
+        id: ".".to_string(),
+        name: parsed.name.clone(),
+        artifact_id: parsed.artifact_id.clone(),
+        group_id: parsed.group_id.clone(),
+        version: parsed.version.clone(),
+        packaging: parsed.packaging.clone(),
+        relative_path: String::new(),
+        pom_path: path_to_string(root_pom),
+        children: Vec::new(),
+        error_message: if root.exists() { None } else { Some("项目目录不存在。".to_string()) },
+    }
 }
 
 fn parse_child_modules(root: &Path, parent_dir: &Path, modules: &[String]) -> Vec<MavenModule> {

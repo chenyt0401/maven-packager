@@ -19,4 +19,6 @@ pub struct BuildTemplate {
     pub maven_home: Option<String>,
     pub created_at: Option<String>,
     pub updated_at: Option<String>,
+    #[serde(default)]
+    pub pinned: bool,
 }

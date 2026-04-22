@@ -58,21 +58,45 @@
   overflow: hidden;
 }
 
-.sidebar-stack {
+.sidebar-nav-shell {
   display: flex;
   height: 100%;
   min-height: 0;
   flex-direction: column;
-  gap: 16px;
+  gap: 12px;
 }
 
-.sidebar-main {
+.sidebar-menu {
+  flex: 0 0 auto;
+  min-width: 0;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+}
+
+.sidebar-menu.ant-menu-horizontal {
+  line-height: 40px;
+}
+
+.sidebar-menu .ant-menu-item {
+  padding-inline: 14px;
+}
+
+.sidebar-panel-host {
   display: flex;
   flex: 1 1 auto;
   min-height: 0;
   flex-direction: column;
-  gap: 16px;
   overflow: hidden auto;
+}
+
+.sidebar-panel-host > .panel-card {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.sidebar-panel-host > .panel-card > .ant-card-body {
+  min-height: 0;
+  overflow: auto;
 }
 
 .app-content {
@@ -172,15 +196,71 @@
   font-size: 12px;
 }
 
+.project-list-block {
+  display: flex;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.project-list {
+  min-height: 0;
+  overflow: auto;
+}
+
+.project-list-item {
+  padding: 10px !important;
+  margin-bottom: 8px;
+  cursor: pointer;
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  transition: border-color 0.18s ease, background-color 0.18s ease;
+}
+
+.project-list-item:hover {
+  background: #f8fafc;
+  border-color: #bbf7d0;
+}
+
+.project-list-item.active {
+  background: #f0fdf4;
+  border-color: #16a34a;
+}
+
+.project-list-content {
+  min-width: 0;
+  width: 100%;
+}
+
+.project-list-path {
+  display: block;
+  max-width: 100%;
+  font-size: 12px;
+}
+
 .git-row,
 .favorite-item {
   min-width: 0;
   width: 100%;
 }
 
+.favorite-pin {
+  margin-right: 4px;
+  color: #16a34a;
+}
+
+.favorite-meta,
+.artifact-meta {
+  display: block;
+  max-width: 100%;
+  font-size: 12px;
+}
+
 .favorite-groups-card {
   display: flex;
-  flex: 0 0 196px;
+  flex: 1 1 auto;
   min-height: 0;
   flex-direction: column;
 }
@@ -313,6 +393,20 @@
 
 .command-editor-title {
   margin: 0 0 2px;
+}
+
+.artifact-section {
+  padding-top: 4px;
+  border-top: 1px solid #dcfce7;
+}
+
+.artifact-section-title {
+  margin-bottom: 4px;
+}
+
+.artifact-item {
+  min-width: 0;
+  width: 100%;
 }
 
 .status-tag {
@@ -507,8 +601,8 @@
     overflow: visible;
   }
 
-  .sidebar-stack,
-  .sidebar-main {
+  .sidebar-nav-shell,
+  .sidebar-panel-host {
     height: auto;
     overflow: visible;
   }

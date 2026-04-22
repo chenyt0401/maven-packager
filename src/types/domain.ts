@@ -80,6 +80,15 @@ export interface BuildOptions {
   editableCommand: string
 }
 
+export interface BuildArtifact {
+  path: string
+  fileName: string
+  extension: string
+  sizeBytes: number
+  modifiedAt?: string
+  modulePath: string
+}
+
 export interface BuildCommandPayload {
   options: BuildOptions
   environment: BuildEnvironment
@@ -119,6 +128,8 @@ export interface BuildHistoryRecord {
   javaHome?: string
   mavenHome?: string
   useMavenWrapper: boolean
+  buildOptions?: BuildOptions
+  artifacts?: BuildArtifact[]
 }
 
 export interface BuildTemplate {
@@ -137,6 +148,7 @@ export interface BuildTemplate {
   mavenHome?: string
   createdAt?: string
   updatedAt?: string
+  pinned?: boolean
 }
 
 export interface EnvironmentSettings {
@@ -144,4 +156,5 @@ export interface EnvironmentSettings {
   mavenHome?: string
   useMavenWrapper: boolean
   lastProjectPath?: string
+  projectPaths?: string[]
 }
