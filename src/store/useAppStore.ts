@@ -1,7 +1,9 @@
 import {create} from 'zustand'
 import {api, createDefaultBuildOptions, selectProjectDirectory} from '../services/tauri-api'
+import {diagnoseBuildFailure} from '../services/buildDiagnosisService'
 import type {
     BuildArtifact,
+    BuildDiagnosis,
     BuildEnvironment,
     BuildFinishedEvent,
     BuildHistoryRecord,
@@ -30,6 +32,7 @@ interface AppState {
   startedAt?: number
   durationMs: number
   logs: BuildLogEvent[]
+  diagnosis?: BuildDiagnosis
   artifacts: BuildArtifact[]
   history: BuildHistoryRecord[]
   templates: BuildTemplate[]
@@ -61,6 +64,7 @@ interface AppState {
   ) => void
   setEditableCommand: (command: string) => void
   refreshCommandPreview: () => Promise<void>
+  refreshEnvironment: () => Promise<void>
   updateEnvironment: (settings: EnvironmentSettings) => Promise<void>
   startBuild: () => Promise<void>
   cancelBuild: () => Promise<void>
@@ -201,11 +205,21 @@ const upsertProjectPath = (paths: string[], rootPath: string) => {
   ].slice(0, 20)
 }
 
+const isSameBuildLogLine = (
+  previous: BuildLogEvent | undefined,
+  next: BuildLogEvent,
+) =>
+  Boolean(previous)
+  && previous?.buildId === next.buildId
+  && previous.stream === next.stream
+  && previous.line === next.line
+
 export const useAppStore = create<AppState>((set, get) => ({
   buildOptions: createDefaultBuildOptions(),
   buildStatus: 'IDLE',
   durationMs: 0,
   logs: [],
+  diagnosis: undefined,
   artifacts: [],
   history: [],
   templates: [],
@@ -256,6 +270,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       loading: true,
       error: undefined,
       logs: [],
+      diagnosis: undefined,
       artifacts: [],
       gitStatus: undefined,
       gitCommits: [],
@@ -528,6 +543,19 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
+  refreshEnvironment: async () => {
+    const { project } = get()
+    try {
+      const environment = await api.detectEnvironment(project?.rootPath ?? '')
+      set({ environment })
+      if (project) {
+        await get().refreshCommandPreview()
+      }
+    } catch (error) {
+      set({ error: getErrorMessage(error) })
+    }
+  },
+
   startBuild: async () => {
     const { buildOptions, environment, selectedModules } = get()
     if (!environment || !buildOptions.projectRoot || !buildOptions.editableCommand.trim()) {
@@ -538,6 +566,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({
       buildStatus: 'RUNNING',
       logs: [],
+      diagnosis: undefined,
       artifacts: [],
       startedAt: Date.now(),
       durationMs: 0,
@@ -575,19 +604,24 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   appendBuildLog: (event: BuildLogEvent) => {
     set((state) => ({
-      logs: [...state.logs.slice(-4999), event],
+      logs: isSameBuildLogLine(state.logs.at(-1), event)
+        ? state.logs
+        : [...state.logs.slice(-4999), event],
     }))
   },
 
   clearBuildLogs: () => {
-    set({ logs: [] })
+    set({ logs: [], diagnosis: undefined })
   },
 
   finishBuild: (event: BuildFinishedEvent) => {
-    const { buildOptions, environment, selectedModules, currentBuildId } = get()
+    const { buildOptions, environment, selectedModules, currentBuildId, logs } = get()
     if (event.buildId !== currentBuildId) {
       return
     }
+    const diagnosis = event.status === 'FAILED'
+      ? diagnoseBuildFailure(event.buildId, logs, environment)
+      : undefined
     const record: BuildHistoryRecord = {
       id: event.buildId,
       createdAt: new Date().toISOString(),
@@ -617,6 +651,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       buildStatus: toHistoryStatus(event.status),
       durationMs: event.durationMs,
       currentBuildId: undefined,
+      diagnosis,
     })
   },
 

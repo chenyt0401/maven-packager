@@ -1,4 +1,5 @@
 use crate::models::build::BuildCommandPayload;
+use crate::models::environment::EnvironmentSource;
 
 pub fn build_command_preview(payload: BuildCommandPayload) -> String {
     let options = payload.options;
@@ -32,6 +33,20 @@ pub fn build_command_preview(payload: BuildCommandPayload) -> String {
     }
     if options.skip_tests {
         args.push("-Dmaven.test.skip=true".to_string());
+    }
+    if matches!(environment.settings_xml_source, EnvironmentSource::Manual) {
+        if let Some(settings_xml_path) = environment.settings_xml_path {
+            args.push("-s".to_string());
+            args.push(quote_if_needed(settings_xml_path));
+        }
+    }
+    if matches!(environment.local_repo_source, EnvironmentSource::Manual) {
+        if let Some(local_repo_path) = environment.local_repo_path {
+            args.push(format!(
+                "-Dmaven.repo.local={}",
+                quote_if_needed(local_repo_path)
+            ));
+        }
     }
     if !options.profiles.is_empty() {
         args.push(format!("-P{}", options.profiles.join(",")));

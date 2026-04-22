@@ -1,4 +1,6 @@
-use crate::models::environment::{BuildEnvironment, EnvironmentSettings};
+use crate::models::environment::{
+    BuildEnvironment, EnvironmentSettings, EnvironmentSource, EnvironmentStatus,
+};
 use std::env;
 use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
@@ -8,7 +10,7 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 pub fn detect_environment(root_path: &str, settings: EnvironmentSettings) -> BuildEnvironment {
     let mut errors = Vec::new();
-    let (java_home, java_path) = resolve_java(settings.java_home.as_deref());
+    let (java_home, java_path, java_source) = resolve_java(settings.java_home.as_deref());
     let java_version = java_path
         .as_deref()
         .and_then(|path| run_version(path, &["-version"]))
@@ -21,8 +23,7 @@ pub fn detect_environment(root_path: &str, settings: EnvironmentSettings) -> Bui
         errors.push("无法执行 java -version，请检查 JDK 是否可用。".to_string());
     }
 
-    let maven_path =
-        resolve_maven_path(settings.maven_home.as_deref()).or_else(first_maven_on_path);
+    let (maven_path, maven_source) = resolve_maven(settings.maven_home.as_deref());
     let maven_home = maven_path
         .as_deref()
         .and_then(|path| maven_home_from_path(&PathBuf::from(path)))
@@ -42,36 +43,88 @@ pub fn detect_environment(root_path: &str, settings: EnvironmentSettings) -> Bui
     let wrapper_path =
         (!root_path.trim().is_empty()).then(|| PathBuf::from(root_path).join("mvnw.cmd"));
     let has_maven_wrapper = wrapper_path.as_ref().is_some_and(|path| path.exists());
-    let settings_xml_path = detect_settings_xml(maven_path.as_deref(), maven_home.as_deref());
+    let wrapper_source = if has_maven_wrapper {
+        EnvironmentSource::Wrapper
+    } else {
+        EnvironmentSource::Missing
+    };
+    if settings.use_maven_wrapper && !has_maven_wrapper {
+        errors.push("已启用 Maven Wrapper，但项目根目录未发现 mvnw.cmd。".to_string());
+    }
+
+    let (settings_xml_path, settings_xml_source) = detect_settings_xml(
+        settings.settings_xml_path.as_deref(),
+        maven_path.as_deref(),
+        maven_home.as_deref(),
+    );
+    let (local_repo_path, local_repo_source) = detect_local_repo(
+        settings.local_repo_path.as_deref(),
+        settings_xml_path.as_deref(),
+    );
+    let (git_path, git_source) = first_where("git")
+        .map(|path| (Some(path), EnvironmentSource::Auto))
+        .unwrap_or((None, EnvironmentSource::Missing));
+    let git_version = git_path
+        .as_deref()
+        .and_then(|path| run_version(path, &["--version"]));
+
+    if git_path.is_none() {
+        errors.push("未识别到 Git，Git 状态与分支操作将不可用。".to_string());
+    }
+
+    let status = environment_status(&errors);
 
     BuildEnvironment {
         java_home,
         java_version,
         java_path,
+        java_source,
         maven_home,
         maven_version,
         maven_path,
+        maven_source,
         settings_xml_path,
+        settings_xml_source,
+        local_repo_path,
+        local_repo_source,
         has_maven_wrapper,
         maven_wrapper_path: wrapper_path
             .filter(|_| has_maven_wrapper)
             .map(path_to_string),
         use_maven_wrapper: settings.use_maven_wrapper && has_maven_wrapper,
+        wrapper_source,
+        git_path,
+        git_version,
+        git_source,
+        status,
         errors,
     }
 }
 
-fn resolve_java(saved: Option<&str>) -> (Option<String>, Option<String>) {
+fn resolve_java(saved: Option<&str>) -> (Option<String>, Option<String>, EnvironmentSource) {
     let from_saved = saved.and_then(|path| normalize_java_path(PathBuf::from(path)));
     let from_java_home = env::var("JAVA_HOME")
         .ok()
         .and_then(|path| normalize_java_path(PathBuf::from(path)));
     let from_path = first_where("java").and_then(|path| normalize_java_path(PathBuf::from(path)));
 
-    let resolved = from_saved.or(from_java_home).or(from_path);
+    let (resolved, source) = if let Some(value) = from_saved {
+        (Some(value), EnvironmentSource::Manual)
+    } else if let Some(value) = from_java_home {
+        (Some(value), EnvironmentSource::Auto)
+    } else if let Some(value) = from_path {
+        (Some(value), EnvironmentSource::Auto)
+    } else {
+        (None, EnvironmentSource::Missing)
+    };
+
     match resolved {
-        Some((home, executable)) => (Some(path_to_string(home)), Some(path_to_string(executable))),
-        None => (None, None),
+        Some((home, executable)) => (
+            Some(path_to_string(home)),
+            Some(path_to_string(executable)),
+            source,
+        ),
+        None => (None, None, source),
     }
 }
 
@@ -112,6 +165,16 @@ fn resolve_maven_path(saved: Option<&str>) -> Option<String> {
         .into_iter()
         .find(|candidate| candidate.exists())
         .map(path_to_string)
+}
+
+fn resolve_maven(saved: Option<&str>) -> (Option<String>, EnvironmentSource) {
+    if let Some(path) = resolve_maven_path(saved) {
+        return (Some(path), EnvironmentSource::Manual);
+    }
+    if let Some(path) = first_maven_on_path() {
+        return (Some(path), EnvironmentSource::Auto);
+    }
+    (None, EnvironmentSource::Missing)
 }
 
 fn maven_home_from_path(path: &PathBuf) -> Option<String> {
@@ -159,10 +222,30 @@ fn normalize_maven_executable(path: PathBuf) -> Option<String> {
     path.exists().then(|| path_to_string(path))
 }
 
-fn detect_settings_xml(maven_path: Option<&str>, saved_maven_home: Option<&str>) -> Option<String> {
-    user_settings_xml()
-        .or_else(|| saved_maven_home.and_then(|path| maven_home_settings_xml(&PathBuf::from(path))))
-        .or_else(|| maven_path.and_then(|path| maven_home_settings_xml(&PathBuf::from(path))))
+fn detect_settings_xml(
+    saved_settings_xml: Option<&str>,
+    maven_path: Option<&str>,
+    saved_maven_home: Option<&str>,
+) -> (Option<String>, EnvironmentSource) {
+    if let Some(path) = saved_settings_xml {
+        let path = PathBuf::from(path);
+        if path.exists() {
+            return (Some(path_to_string(path)), EnvironmentSource::Manual);
+        }
+    }
+
+    if let Some(path) = user_settings_xml() {
+        return (Some(path), EnvironmentSource::Auto);
+    }
+    if let Some(path) =
+        saved_maven_home.and_then(|path| maven_home_settings_xml(&PathBuf::from(path)))
+    {
+        return (Some(path), EnvironmentSource::Auto);
+    }
+    if let Some(path) = maven_path.and_then(|path| maven_home_settings_xml(&PathBuf::from(path))) {
+        return (Some(path), EnvironmentSource::Auto);
+    }
+    (None, EnvironmentSource::Missing)
 }
 
 fn user_settings_xml() -> Option<String> {
@@ -190,6 +273,67 @@ fn maven_home_settings_xml(path: &PathBuf) -> Option<String> {
 
     let settings_xml = maven_home.join("conf").join("settings.xml");
     settings_xml.exists().then(|| path_to_string(settings_xml))
+}
+
+fn detect_local_repo(
+    saved_local_repo: Option<&str>,
+    settings_xml_path: Option<&str>,
+) -> (Option<String>, EnvironmentSource) {
+    if let Some(path) = saved_local_repo {
+        let path = PathBuf::from(path);
+        if path.exists() {
+            return (Some(path_to_string(path)), EnvironmentSource::Manual);
+        }
+    }
+
+    if let Some(path) = settings_xml_path
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .and_then(|content| extract_local_repository(&content))
+        .map(PathBuf::from)
+        .filter(|path| path.exists())
+    {
+        return (Some(path_to_string(path)), EnvironmentSource::Auto);
+    }
+
+    let default_repo = user_m2_path().join("repository");
+    if default_repo.exists() {
+        return (Some(path_to_string(default_repo)), EnvironmentSource::Auto);
+    }
+
+    (
+        Some(path_to_string(default_repo)),
+        EnvironmentSource::Missing,
+    )
+}
+
+fn extract_local_repository(content: &str) -> Option<String> {
+    let start_tag = "<localRepository>";
+    let end_tag = "</localRepository>";
+    let start = content.find(start_tag)? + start_tag.len();
+    let end = content[start..].find(end_tag)? + start;
+    let value = content[start..end].trim();
+    (!value.is_empty()).then(|| value.to_string())
+}
+
+fn user_m2_path() -> PathBuf {
+    env::var("USERPROFILE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("."))
+        .join(".m2")
+}
+
+fn environment_status(errors: &[String]) -> EnvironmentStatus {
+    if errors
+        .iter()
+        .any(|error| error.contains("JDK") || error.contains("Maven"))
+    {
+        return EnvironmentStatus::Error;
+    }
+    if errors.is_empty() {
+        EnvironmentStatus::Ok
+    } else {
+        EnvironmentStatus::Warning
+    }
 }
 
 fn first_where(program: &str) -> Option<String> {

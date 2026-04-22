@@ -66,14 +66,50 @@ export interface BuildEnvironment {
   javaHome?: string
   javaVersion?: string
   javaPath?: string
+  javaSource: EnvironmentSource
   mavenHome?: string
   mavenVersion?: string
   mavenPath?: string
+  mavenSource: EnvironmentSource
   settingsXmlPath?: string
+  settingsXmlSource: EnvironmentSource
+  localRepoPath?: string
+  localRepoSource: EnvironmentSource
   hasMavenWrapper: boolean
   mavenWrapperPath?: string
   useMavenWrapper: boolean
+  wrapperSource: EnvironmentSource
+  gitPath?: string
+  gitVersion?: string
+  gitSource: EnvironmentSource
+  status: EnvironmentStatus
   errors: string[]
+}
+
+export type EnvironmentStatus = 'ok' | 'warning' | 'error'
+
+export type EnvironmentSource = 'auto' | 'manual' | 'wrapper' | 'missing'
+
+export type BuildDiagnosisCategory =
+  | 'jdk_mismatch'
+  | 'maven_missing'
+  | 'wrapper_issue'
+  | 'settings_missing'
+  | 'dependency_download_failed'
+  | 'repo_unreachable'
+  | 'profile_invalid'
+  | 'module_invalid'
+  | 'test_failed'
+  | 'unknown'
+
+export interface BuildDiagnosis {
+  id: string
+  taskId: string
+  summary: string
+  category: BuildDiagnosisCategory
+  possibleCauses: string[]
+  suggestedActions: string[]
+  keywordLines: string[]
 }
 
 export interface BuildOptions {
@@ -162,6 +198,8 @@ export interface BuildTemplate {
 export interface EnvironmentSettings {
   javaHome?: string
   mavenHome?: string
+  settingsXmlPath?: string
+  localRepoPath?: string
   useMavenWrapper: boolean
   lastProjectPath?: string
   projectPaths?: string[]

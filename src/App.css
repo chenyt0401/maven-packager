@@ -336,28 +336,68 @@
 
 .env-summary-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: 1fr;
   gap: 8px;
+}
+
+.env-executor {
+  min-width: 0;
+  padding: 10px 12px;
+  background: #f0fdf4;
+  border: 1px solid #bbf7d0;
+  border-radius: 8px;
 }
 
 .env-summary-item {
   min-width: 0;
-  padding: 8px 10px;
+  padding: 10px 12px;
   background: #f8fafc;
   border: 1px solid #e5e7eb;
   border-radius: 8px;
 }
 
+.env-wrapper-toggle {
+  background: #ffffff;
+}
+
+.env-executor-toggle {
+  justify-self: end;
+  width: fit-content;
+  max-width: 100%;
+}
+
+.env-executor-toggle .ant-segmented-item {
+  min-width: 64px;
+  text-align: center;
+}
+
 .env-summary-main {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(72px, 112px) minmax(0, 1fr);
   align-items: center;
-  justify-content: space-between;
   gap: 8px;
   min-width: 0;
 }
 
-.env-summary-main .ant-tag {
-  max-width: 68%;
+.env-summary-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.env-summary-tags {
+  min-width: 0;
+  justify-content: flex-end;
+}
+
+.env-summary-tags .ant-space-item {
+  min-width: 0;
+  max-width: 56%;
+}
+
+.env-summary-tags .ant-tag {
+  max-width: 100%;
   margin-inline-end: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -367,11 +407,16 @@
 .env-summary-path {
   display: block;
   max-width: 100%;
-  margin-top: 4px;
+  margin-top: 6px;
   overflow: hidden;
   font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.env-row .ant-input-group {
+  display: flex !important;
+  width: 100%;
 }
 
 .env-config-collapse .ant-collapse-header {
@@ -383,15 +428,26 @@
 }
 
 .env-path-input {
-  width: calc(100% - 78px);
+  flex: 1 1 auto;
+  width: auto !important;
+  min-width: 0;
 }
 
 .env-path-input-single-action {
-  width: calc(100% - 72px);
+  flex: 1 1 auto;
+  width: auto !important;
+  min-width: 0;
 }
 
 .env-path-input-double-action {
-  width: calc(100% - 144px);
+  flex: 1 1 auto;
+  width: auto !important;
+  min-width: 0;
+}
+
+.env-row .ant-btn {
+  flex: 0 0 auto;
+  min-width: 68px;
 }
 
 .command-textarea textarea {
@@ -495,6 +551,37 @@
 
 .log-line.warn {
   color: #ffd479;
+}
+
+.diagnosis-card .ant-card-body {
+  padding-top: 12px;
+}
+
+.diagnosis-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.diagnosis-grid .ant-list-item {
+  padding: 4px 0;
+}
+
+.diagnosis-keyword-lines {
+  max-height: 180px;
+  padding: 8px;
+  margin-top: 6px;
+  overflow: auto;
+  color: #d7e4dd;
+  background: #101513;
+  border-radius: 8px;
+  font-family: Consolas, "Cascadia Mono", monospace;
+  font-size: 12px;
+}
+
+.diagnosis-keyword-lines pre {
+  margin: 0 0 4px;
+  white-space: pre-wrap;
 }
 
 .table-toolbar {
@@ -660,6 +747,10 @@
   }
 
   .env-summary-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .diagnosis-grid {
     grid-template-columns: 1fr;
   }
 

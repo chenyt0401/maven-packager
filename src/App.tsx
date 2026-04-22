@@ -2,11 +2,11 @@ import {useEffect, useState} from 'react'
 import type {TabsProps} from 'antd'
 import {App as AntApp, ConfigProvider, Layout, Menu, Space, Tabs, Tag, theme, Typography} from 'antd'
 import {
-  AppstoreAddOutlined,
-  BranchesOutlined,
-  FolderOpenOutlined,
-  FolderOutlined,
-  NodeIndexOutlined,
+    AppstoreAddOutlined,
+    BranchesOutlined,
+    FolderOpenOutlined,
+    FolderOutlined,
+    NodeIndexOutlined,
 } from '@ant-design/icons'
 import {AdvancedOptionsPanel} from './components/AdvancedOptions/AdvancedOptionsPanel'
 import {BuildLogPanel} from './components/BuildLogPanel/BuildLogPanel'
@@ -53,11 +53,19 @@ function App() {
     initialize()
 
     let cleanup: (() => void) | undefined
+    let disposed = false
     void registerBuildEvents(appendBuildLog, finishBuild).then((unlisten) => {
+      if (disposed) {
+        unlisten()
+        return
+      }
       cleanup = unlisten
     })
 
-    return () => cleanup?.()
+    return () => {
+      disposed = true
+      cleanup?.()
+    }
   }, [appendBuildLog, finishBuild, initialize])
 
   const buildTabs: TabsProps['items'] = [
@@ -68,7 +76,7 @@ function App() {
     },
     {
       key: 'environment',
-      label: '环境检测',
+      label: '环境中心',
       children: <EnvPanel />,
     },
     {
