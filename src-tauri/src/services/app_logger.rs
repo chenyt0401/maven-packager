@@ -23,7 +23,8 @@ pub fn logs_dir(app: &AppHandle) -> AppResult<PathBuf> {
         .app_data_dir()
         .map_err(|error| to_user_error(format!("无法获取应用数据目录：{}", error)))?
         .join("logs");
-    fs::create_dir_all(&dir).map_err(|error| to_user_error(format!("无法创建日志目录：{}", error)))?;
+    fs::create_dir_all(&dir)
+        .map_err(|error| to_user_error(format!("无法创建日志目录：{}", error)))?;
     Ok(dir)
 }
 

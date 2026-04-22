@@ -39,7 +39,8 @@ pub fn detect_environment(root_path: &str, settings: EnvironmentSettings) -> Bui
         errors.push("无法执行 mvn -version，请检查 Maven 是否可用。".to_string());
     }
 
-    let wrapper_path = (!root_path.trim().is_empty()).then(|| PathBuf::from(root_path).join("mvnw.cmd"));
+    let wrapper_path =
+        (!root_path.trim().is_empty()).then(|| PathBuf::from(root_path).join("mvnw.cmd"));
     let has_maven_wrapper = wrapper_path.as_ref().is_some_and(|path| path.exists());
     let settings_xml_path = detect_settings_xml(maven_path.as_deref(), maven_home.as_deref());
 
@@ -52,7 +53,9 @@ pub fn detect_environment(root_path: &str, settings: EnvironmentSettings) -> Bui
         maven_path,
         settings_xml_path,
         has_maven_wrapper,
-        maven_wrapper_path: wrapper_path.filter(|_| has_maven_wrapper).map(path_to_string),
+        maven_wrapper_path: wrapper_path
+            .filter(|_| has_maven_wrapper)
+            .map(path_to_string),
         use_maven_wrapper: settings.use_maven_wrapper && has_maven_wrapper,
         errors,
     }
@@ -84,7 +87,10 @@ fn normalize_java_path(path: PathBuf) -> Option<(PathBuf, PathBuf)> {
 
     let direct = path.join("java.exe");
     if direct.exists() {
-        let home = path.parent().map(PathBuf::from).unwrap_or_else(|| path.clone());
+        let home = path
+            .parent()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| path.clone());
         return Some((home, direct));
     }
 

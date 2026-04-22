@@ -3,11 +3,11 @@ import {App, Button, Modal, Progress, Space, Typography} from 'antd'
 import type {Update} from '@tauri-apps/plugin-updater'
 import ReactMarkdown from 'react-markdown'
 import {
-  type AppUpdateDownloadEvent,
-  checkForAppUpdate,
-  getCurrentAppVersion,
-  installAppUpdate,
-  isTauriRuntime,
+    type AppUpdateDownloadEvent,
+    checkForAppUpdate,
+    getCurrentAppVersion,
+    installAppUpdate,
+    isTauriRuntime,
 } from '../../services/tauri-api'
 
 const { Text } = Typography

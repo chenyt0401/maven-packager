@@ -1,20 +1,20 @@
 import {create} from 'zustand'
 import {api, createDefaultBuildOptions, selectProjectDirectory} from '../services/tauri-api'
 import type {
-  BuildArtifact,
-  BuildEnvironment,
-  BuildFinishedEvent,
-  BuildHistoryRecord,
-  BuildLogEvent,
-  BuildOptions,
-  BuildStatus,
-  BuildTemplate,
-  EnvironmentSettings,
-  GitCommit,
-  GitRepositoryStatus,
-  MavenModule,
-  MavenProject,
-  PersistedBuildStatus,
+    BuildArtifact,
+    BuildEnvironment,
+    BuildFinishedEvent,
+    BuildHistoryRecord,
+    BuildLogEvent,
+    BuildOptions,
+    BuildStatus,
+    BuildTemplate,
+    EnvironmentSettings,
+    GitCommit,
+    GitRepositoryStatus,
+    MavenModule,
+    MavenProject,
+    PersistedBuildStatus,
 } from '../types/domain'
 
 interface AppState {
@@ -39,6 +39,7 @@ interface AppState {
   gitCommitsLoading: boolean
   gitPulling: boolean
   gitSwitching: boolean
+  gitError?: string
   loading: boolean
   error?: string
   initialize: () => Promise<void>
@@ -50,6 +51,7 @@ interface AppState {
   fetchGitUpdates: () => Promise<void>
   pullGitUpdates: () => Promise<void>
   switchGitBranch: (branchName: string) => Promise<void>
+  clearGitError: () => void
   setSelectedModule: (moduleId: string) => void
   setSelectedModules: (moduleIds: string[]) => void
   selectAllProject: () => void
@@ -215,6 +217,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   gitCommitsLoading: false,
   gitPulling: false,
   gitSwitching: false,
+  gitError: undefined,
   loading: false,
 
   initialize: async () => {
@@ -256,6 +259,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       artifacts: [],
       gitStatus: undefined,
       gitCommits: [],
+      gitError: undefined,
     })
     try {
       const [project, environment] = await Promise.all([
@@ -304,10 +308,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       return
     }
 
-    set({ gitChecking: true })
+    set({ gitChecking: true, gitError: undefined })
     try {
       const gitStatus = await api.checkGitStatus(targetPath)
-      set({ gitStatus })
+      set({ gitStatus, gitError: undefined })
       void get().loadGitCommits(targetPath)
     } catch (error) {
       set({
@@ -321,6 +325,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           message: getErrorMessage(error),
         },
         gitCommits: [],
+        gitError: getErrorMessage(error),
       })
     } finally {
       set({ gitChecking: false })
@@ -351,13 +356,13 @@ export const useAppStore = create<AppState>((set, get) => ({
       return
     }
 
-    set({ gitChecking: true, error: undefined })
+    set({ gitChecking: true, gitError: undefined })
     try {
       const gitStatus = await api.fetchGitUpdates(targetPath)
-      set({ gitStatus })
+      set({ gitStatus, gitError: undefined })
       await get().loadGitCommits(targetPath)
     } catch (error) {
-      set({ error: getErrorMessage(error) })
+      set({ gitError: getErrorMessage(error) })
     } finally {
       set({ gitChecking: false })
     }
@@ -369,15 +374,16 @@ export const useAppStore = create<AppState>((set, get) => ({
       return
     }
 
-    set({ gitPulling: true, error: undefined })
+    set({ gitPulling: true, gitError: undefined })
     try {
       const result = await api.pullGitUpdates(targetPath)
-      set({ gitStatus: result.status })
+      set({ gitStatus: result.status, gitError: undefined })
       await get().loadGitCommits(targetPath)
       await get().parseProjectPath(targetPath)
     } catch (error) {
-      set({ error: getErrorMessage(error) })
+      const gitError = getErrorMessage(error)
       await get().checkGitStatus(targetPath)
+      set({ gitError })
     } finally {
       set({ gitPulling: false })
     }
@@ -389,18 +395,23 @@ export const useAppStore = create<AppState>((set, get) => ({
       return
     }
 
-    set({ gitSwitching: true, error: undefined })
+    set({ gitSwitching: true, gitError: undefined })
     try {
       const result = await api.switchGitBranch(targetPath, branchName)
-      set({ gitStatus: result.status })
+      set({ gitStatus: result.status, gitError: undefined })
       await get().loadGitCommits(targetPath)
       await get().parseProjectPath(targetPath)
     } catch (error) {
-      set({ error: getErrorMessage(error) })
+      const gitError = getErrorMessage(error)
       await get().checkGitStatus(targetPath)
+      set({ gitError })
     } finally {
       set({ gitSwitching: false })
     }
+  },
+
+  clearGitError: () => {
+    set({ gitError: undefined })
   },
 
   setSelectedModule: (moduleId: string) => {

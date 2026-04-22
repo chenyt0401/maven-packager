@@ -1,12 +1,13 @@
 use crate::error::AppResult;
 use crate::models::template::BuildTemplate;
 use crate::repositories::template_repo;
-use crate::services::app_logger;
+use crate::services::{app_logger, blocking};
 use tauri::AppHandle;
 
 #[tauri::command]
-pub fn list_templates(app: AppHandle) -> AppResult<Vec<BuildTemplate>> {
-    let result = template_repo::list(&app);
+pub async fn list_templates(app: AppHandle) -> AppResult<Vec<BuildTemplate>> {
+    let task_app = app.clone();
+    let result = blocking::run(move || template_repo::list(&task_app)).await;
     match &result {
         Ok(templates) => app_logger::log_info(
             &app,
@@ -21,7 +22,7 @@ pub fn list_templates(app: AppHandle) -> AppResult<Vec<BuildTemplate>> {
 }
 
 #[tauri::command]
-pub fn save_template(app: AppHandle, template: BuildTemplate) -> AppResult<()> {
+pub async fn save_template(app: AppHandle, template: BuildTemplate) -> AppResult<()> {
     app_logger::log_info(
         &app,
         "template.save.start",
@@ -30,7 +31,8 @@ pub fn save_template(app: AppHandle, template: BuildTemplate) -> AppResult<()> {
             template.id, template.name, template.project_root, template.module_path
         ),
     );
-    let result = template_repo::save(&app, template);
+    let task_app = app.clone();
+    let result = blocking::run(move || template_repo::save(&task_app, template)).await;
     if let Err(error) = &result {
         app_logger::log_error(&app, "template.save.failed", format!("error={}", error));
     }
@@ -38,13 +40,10 @@ pub fn save_template(app: AppHandle, template: BuildTemplate) -> AppResult<()> {
 }
 
 #[tauri::command]
-pub fn delete_template(app: AppHandle, template_id: String) -> AppResult<()> {
-    app_logger::log_info(
-        &app,
-        "template.delete.start",
-        format!("id={}", template_id),
-    );
-    let result = template_repo::delete(&app, &template_id);
+pub async fn delete_template(app: AppHandle, template_id: String) -> AppResult<()> {
+    app_logger::log_info(&app, "template.delete.start", format!("id={}", template_id));
+    let task_app = app.clone();
+    let result = blocking::run(move || template_repo::delete(&task_app, &template_id)).await;
     if let Err(error) = &result {
         app_logger::log_error(&app, "template.delete.failed", format!("error={}", error));
     }

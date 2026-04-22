@@ -54,7 +54,11 @@ fn root_as_module(root: &Path, root_pom: &Path, parsed: &ParsedPom) -> MavenModu
         relative_path: String::new(),
         pom_path: path_to_string(root_pom),
         children: Vec::new(),
-        error_message: if root.exists() { None } else { Some("项目目录不存在。".to_string()) },
+        error_message: if root.exists() {
+            None
+        } else {
+            Some("项目目录不存在。".to_string())
+        },
     }
 }
 
@@ -142,14 +146,12 @@ fn parse_pom_file(path: &Path) -> AppResult<ParsedPom> {
         .ok_or_else(|| to_user_error("POM 中缺少 project 根节点。"))?;
 
     let parent = direct_child(project, "parent");
-    let group_id = child_text(project, "groupId").or_else(|| {
-        parent.and_then(|parent_node| child_text(parent_node, "groupId"))
-    });
-    let version = child_text(project, "version").or_else(|| {
-        parent.and_then(|parent_node| child_text(parent_node, "version"))
-    });
-    let artifact_id =
-        child_text(project, "artifactId").ok_or_else(|| to_user_error("POM 中缺少 artifactId。"))?;
+    let group_id = child_text(project, "groupId")
+        .or_else(|| parent.and_then(|parent_node| child_text(parent_node, "groupId")));
+    let version = child_text(project, "version")
+        .or_else(|| parent.and_then(|parent_node| child_text(parent_node, "version")));
+    let artifact_id = child_text(project, "artifactId")
+        .ok_or_else(|| to_user_error("POM 中缺少 artifactId。"))?;
     let packaging = child_text(project, "packaging").or(Some("jar".to_string()));
     let modules = direct_child(project, "modules")
         .map(|modules_node| {

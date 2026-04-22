@@ -53,11 +53,7 @@ pub fn start_build(
             build_log_path.to_string_lossy()
         ),
     );
-    app_logger::append_build_line(
-        &build_log_path,
-        "system",
-        format!("build_id={}", build_id),
-    );
+    app_logger::append_build_line(&build_log_path, "system", format!("build_id={}", build_id));
     app_logger::append_build_line(
         &build_log_path,
         "system",
@@ -71,12 +67,18 @@ pub fn start_build(
     app_logger::append_build_line(
         &build_log_path,
         "system",
-        format!("java_home={}", payload.java_home.as_deref().unwrap_or("<empty>")),
+        format!(
+            "java_home={}",
+            payload.java_home.as_deref().unwrap_or("<empty>")
+        ),
     );
     app_logger::append_build_line(
         &build_log_path,
         "system",
-        format!("maven_home={}", payload.maven_home.as_deref().unwrap_or("<empty>")),
+        format!(
+            "maven_home={}",
+            payload.maven_home.as_deref().unwrap_or("<empty>")
+        ),
     );
     app_logger::append_build_line(
         &build_log_path,
@@ -96,21 +98,19 @@ pub fn start_build(
         command.env("JAVA_HOME", java_home);
     }
 
-    let mut child = command
-        .spawn()
-        .map_err(|error| {
-            app_logger::log_error(
-                &app,
-                "build.spawn.failed",
-                format!("build_id={}, error={}", build_id, error),
-            );
-            app_logger::append_build_line(
-                &build_log_path,
-                "system",
-                format!("无法启动构建进程：{}", error),
-            );
-            to_user_error(format!("无法启动构建进程：{}", error))
-        })?;
+    let mut child = command.spawn().map_err(|error| {
+        app_logger::log_error(
+            &app,
+            "build.spawn.failed",
+            format!("build_id={}, error={}", build_id, error),
+        );
+        app_logger::append_build_line(
+            &build_log_path,
+            "system",
+            format!("无法启动构建进程：{}", error),
+        );
+        to_user_error(format!("无法启动构建进程：{}", error))
+    })?;
     let pid = child.id();
     app_logger::log_info(
         &app,
@@ -263,7 +263,7 @@ pub fn cancel_build(
         let _ = Command::new("taskkill")
             .args(["/PID", &pid.to_string(), "/T", "/F"])
             .creation_flags(CREATE_NO_WINDOW)
-            .output();
+            .spawn();
         app_logger::log_warn(
             &app,
             "build.cancelled",
@@ -337,7 +337,10 @@ fn emit_reader<R: std::io::Read + Send + 'static>(
 
 fn decode_log_line(bytes: &[u8]) -> String {
     let mut line = bytes;
-    while line.last().is_some_and(|byte| *byte == b'\n' || *byte == b'\r') {
+    while line
+        .last()
+        .is_some_and(|byte| *byte == b'\n' || *byte == b'\r')
+    {
         line = &line[..line.len() - 1];
     }
 

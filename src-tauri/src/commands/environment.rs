@@ -1,30 +1,33 @@
 use crate::error::AppResult;
 use crate::models::environment::{BuildEnvironment, EnvironmentSettings};
 use crate::repositories::settings_repo;
-use crate::services::app_logger;
-use crate::services::env_detector;
+use crate::services::{app_logger, blocking, env_detector};
 use tauri::AppHandle;
 
 #[tauri::command]
-pub fn detect_environment(app: AppHandle, root_path: String) -> AppResult<BuildEnvironment> {
-    let settings = settings_repo::load(&app)?;
+pub async fn detect_environment(app: AppHandle, root_path: String) -> AppResult<BuildEnvironment> {
     app_logger::log_info(
         &app,
         "environment.detect.start",
-        format!(
-            "root_path={}, saved_java_home={}, saved_maven_home={}, use_maven_wrapper={}",
-            root_path,
-            settings.java_home.as_deref().unwrap_or("<empty>"),
-            settings.maven_home.as_deref().unwrap_or("<empty>"),
-            settings.use_maven_wrapper
-        ),
+        format!("root_path={}", root_path),
     );
-    let environment = env_detector::detect_environment(&root_path, settings);
+    let task_app = app.clone();
+    let log_root_path = root_path.clone();
+    let (settings, environment) = blocking::run(move || {
+        let settings = settings_repo::load(&task_app)?;
+        let environment = env_detector::detect_environment(&root_path, settings.clone());
+        Ok((settings, environment))
+    })
+    .await?;
     app_logger::log_info(
         &app,
         "environment.detect.result",
         format!(
-            "java_home={}, java_path={}, java_version={}, maven_home={}, maven_path={}, maven_version={}, settings_xml={}, has_maven_wrapper={}, use_maven_wrapper={}, errors={}",
+            "root_path={}, saved_java_home={}, saved_maven_home={}, saved_use_maven_wrapper={}, java_home={}, java_path={}, java_version={}, maven_home={}, maven_path={}, maven_version={}, settings_xml={}, has_maven_wrapper={}, use_maven_wrapper={}, errors={}",
+            log_root_path,
+            settings.java_home.as_deref().unwrap_or("<empty>"),
+            settings.maven_home.as_deref().unwrap_or("<empty>"),
+            settings.use_maven_wrapper,
             environment.java_home.as_deref().unwrap_or("<empty>"),
             environment.java_path.as_deref().unwrap_or("<empty>"),
             environment.java_version.as_deref().unwrap_or("<empty>"),
@@ -45,8 +48,9 @@ pub fn detect_environment(app: AppHandle, root_path: String) -> AppResult<BuildE
 }
 
 #[tauri::command]
-pub fn load_environment_settings(app: AppHandle) -> AppResult<EnvironmentSettings> {
-    let settings = settings_repo::load(&app);
+pub async fn load_environment_settings(app: AppHandle) -> AppResult<EnvironmentSettings> {
+    let task_app = app.clone();
+    let settings = blocking::run(move || settings_repo::load(&task_app)).await;
     match &settings {
         Ok(settings) => app_logger::log_info(
             &app,
@@ -67,7 +71,7 @@ pub fn load_environment_settings(app: AppHandle) -> AppResult<EnvironmentSetting
 }
 
 #[tauri::command]
-pub fn save_environment_settings(
+pub async fn save_environment_settings(
     app: AppHandle,
     settings: EnvironmentSettings,
 ) -> AppResult<()> {
@@ -82,17 +86,21 @@ pub fn save_environment_settings(
             settings.last_project_path.as_deref().unwrap_or("<empty>")
         ),
     );
-    let mut current = settings_repo::load(&app).unwrap_or_default();
-    current.java_home = settings.java_home;
-    current.maven_home = settings.maven_home;
-    current.use_maven_wrapper = settings.use_maven_wrapper;
-    if settings.last_project_path.is_some() {
-        current.last_project_path = settings.last_project_path.clone();
-    }
-    if !settings.project_paths.is_empty() {
-        current.project_paths = normalize_project_paths(settings.project_paths);
-    }
-    let result = settings_repo::save(&app, current);
+    let task_app = app.clone();
+    let result = blocking::run(move || {
+        let mut current = settings_repo::load(&task_app).unwrap_or_default();
+        current.java_home = settings.java_home;
+        current.maven_home = settings.maven_home;
+        current.use_maven_wrapper = settings.use_maven_wrapper;
+        if settings.last_project_path.is_some() {
+            current.last_project_path = settings.last_project_path.clone();
+        }
+        if !settings.project_paths.is_empty() {
+            current.project_paths = normalize_project_paths(settings.project_paths);
+        }
+        settings_repo::save(&task_app, current)
+    })
+    .await;
     if let Err(error) = &result {
         app_logger::log_error(&app, "settings.save.failed", format!("error={}", error));
     } else {
@@ -102,16 +110,20 @@ pub fn save_environment_settings(
 }
 
 #[tauri::command]
-pub fn save_last_project_path(app: AppHandle, root_path: String) -> AppResult<()> {
+pub async fn save_last_project_path(app: AppHandle, root_path: String) -> AppResult<()> {
     app_logger::log_info(
         &app,
         "settings.last_project.save.start",
         format!("root_path={}", root_path),
     );
-    let mut current = settings_repo::load(&app).unwrap_or_default();
-    current.last_project_path = Some(root_path.clone());
-    upsert_project_path(&mut current.project_paths, root_path);
-    let result = settings_repo::save(&app, current);
+    let task_app = app.clone();
+    let result = blocking::run(move || {
+        let mut current = settings_repo::load(&task_app).unwrap_or_default();
+        current.last_project_path = Some(root_path.clone());
+        upsert_project_path(&mut current.project_paths, root_path);
+        settings_repo::save(&task_app, current)
+    })
+    .await;
     if let Err(error) = &result {
         app_logger::log_error(
             &app,
@@ -123,27 +135,34 @@ pub fn save_last_project_path(app: AppHandle, root_path: String) -> AppResult<()
 }
 
 #[tauri::command]
-pub fn remove_saved_project_path(app: AppHandle, root_path: String) -> AppResult<EnvironmentSettings> {
+pub async fn remove_saved_project_path(
+    app: AppHandle,
+    root_path: String,
+) -> AppResult<EnvironmentSettings> {
     app_logger::log_info(
         &app,
         "settings.project.remove.start",
         format!("root_path={}", root_path),
     );
-    let mut current = settings_repo::load(&app).unwrap_or_default();
-    current.project_paths = current
-        .project_paths
-        .into_iter()
-        .filter(|path| !same_path(path, &root_path))
-        .collect();
-    if current
-        .last_project_path
-        .as_deref()
-        .is_some_and(|path| same_path(path, &root_path))
-    {
-        current.last_project_path = current.project_paths.first().cloned();
-    }
-    settings_repo::save(&app, current.clone())?;
-    Ok(current)
+    let task_app = app.clone();
+    blocking::run(move || {
+        let mut current = settings_repo::load(&task_app).unwrap_or_default();
+        current.project_paths = current
+            .project_paths
+            .into_iter()
+            .filter(|path| !same_path(path, &root_path))
+            .collect();
+        if current
+            .last_project_path
+            .as_deref()
+            .is_some_and(|path| same_path(path, &root_path))
+        {
+            current.last_project_path = current.project_paths.first().cloned();
+        }
+        settings_repo::save(&task_app, current.clone())?;
+        Ok(current)
+    })
+    .await
 }
 
 fn normalize_project_paths(paths: Vec<String>) -> Vec<String> {

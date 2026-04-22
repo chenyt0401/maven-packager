@@ -1,6 +1,6 @@
 use crate::error::{to_user_error, AppResult};
 use crate::models::build::BuildArtifact;
-use crate::services::app_logger;
+use crate::services::{app_logger, blocking};
 use chrono::{DateTime, Utc};
 use std::fs;
 use std::os::windows::process::CommandExt;
@@ -48,7 +48,7 @@ pub fn open_path_in_explorer(app: AppHandle, path: String) -> AppResult<()> {
 }
 
 #[tauri::command]
-pub fn scan_build_artifacts(
+pub async fn scan_build_artifacts(
     app: AppHandle,
     project_root: String,
     module_path: String,
@@ -59,7 +59,28 @@ pub fn scan_build_artifacts(
         format!("project_root={}, module_path={}", project_root, module_path),
     );
 
-    let root = PathBuf::from(&project_root);
+    let result =
+        blocking::run(move || scan_build_artifacts_sync(&project_root, &module_path)).await;
+    match &result {
+        Ok(artifacts) => app_logger::log_info(
+            &app,
+            "filesystem.artifacts.scan.success",
+            format!("count={}", artifacts.len()),
+        ),
+        Err(error) => app_logger::log_error(
+            &app,
+            "filesystem.artifacts.scan.failed",
+            format!("error={}", error),
+        ),
+    }
+    result
+}
+
+fn scan_build_artifacts_sync(
+    project_root: &str,
+    module_path: &str,
+) -> AppResult<Vec<BuildArtifact>> {
+    let root = PathBuf::from(project_root);
     if !root.exists() {
         return Err(to_user_error(format!("项目路径不存在：{}", project_root)));
     }
@@ -87,11 +108,6 @@ pub fn scan_build_artifacts(
             .then_with(|| right.size_bytes.cmp(&left.size_bytes))
     });
     artifacts.truncate(20);
-    app_logger::log_info(
-        &app,
-        "filesystem.artifacts.scan.success",
-        format!("count={}", artifacts.len()),
-    );
     Ok(artifacts)
 }
 

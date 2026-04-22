@@ -26,8 +26,8 @@ pub fn list(app: &AppHandle) -> AppResult<Vec<BuildHistoryRecord>> {
 
 pub fn save(app: &AppHandle, record: BuildHistoryRecord) -> AppResult<()> {
     let connection = open_database(app)?;
-    let payload = serde_json::to_string(&record)
-        .map_err(|error| format!("无法序列化构建历史：{}", error))?;
+    let payload =
+        serde_json::to_string(&record).map_err(|error| format!("无法序列化构建历史：{}", error))?;
 
     connection
         .execute(

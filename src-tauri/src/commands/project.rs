@@ -1,14 +1,19 @@
 use crate::error::AppResult;
 use crate::models::module::MavenModule;
 use crate::models::project::MavenProject;
-use crate::services::app_logger;
 use crate::services::pom_parser;
+use crate::services::{app_logger, blocking};
 use tauri::AppHandle;
 
 #[tauri::command]
-pub fn parse_maven_project(app: AppHandle, root_path: String) -> AppResult<MavenProject> {
-    app_logger::log_info(&app, "project.parse.start", format!("root_path={}", root_path));
-    match pom_parser::parse_maven_project(&root_path) {
+pub async fn parse_maven_project(app: AppHandle, root_path: String) -> AppResult<MavenProject> {
+    app_logger::log_info(
+        &app,
+        "project.parse.start",
+        format!("root_path={}", root_path),
+    );
+    let log_root_path = root_path.clone();
+    match blocking::run(move || pom_parser::parse_maven_project(&root_path)).await {
         Ok(project) => {
             app_logger::log_info(
                 &app,
@@ -26,7 +31,7 @@ pub fn parse_maven_project(app: AppHandle, root_path: String) -> AppResult<Maven
             app_logger::log_error(
                 &app,
                 "project.parse.failed",
-                format!("root_path={}, error={}", root_path, error),
+                format!("root_path={}, error={}", log_root_path, error),
             );
             Err(error)
         }

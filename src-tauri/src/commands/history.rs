@@ -1,12 +1,13 @@
 use crate::error::AppResult;
 use crate::models::history::BuildHistoryRecord;
 use crate::repositories::history_repo;
-use crate::services::app_logger;
+use crate::services::{app_logger, blocking};
 use tauri::AppHandle;
 
 #[tauri::command]
-pub fn list_build_history(app: AppHandle) -> AppResult<Vec<BuildHistoryRecord>> {
-    let result = history_repo::list(&app);
+pub async fn list_build_history(app: AppHandle) -> AppResult<Vec<BuildHistoryRecord>> {
+    let task_app = app.clone();
+    let result = blocking::run(move || history_repo::list(&task_app)).await;
     match &result {
         Ok(records) => app_logger::log_info(
             &app,
@@ -21,7 +22,7 @@ pub fn list_build_history(app: AppHandle) -> AppResult<Vec<BuildHistoryRecord>> 
 }
 
 #[tauri::command]
-pub fn save_build_history(app: AppHandle, record: BuildHistoryRecord) -> AppResult<()> {
+pub async fn save_build_history(app: AppHandle, record: BuildHistoryRecord) -> AppResult<()> {
     app_logger::log_info(
         &app,
         "history.save.start",
@@ -30,7 +31,8 @@ pub fn save_build_history(app: AppHandle, record: BuildHistoryRecord) -> AppResu
             record.id, record.project_root, record.module_path, record.status, record.duration_ms
         ),
     );
-    let result = history_repo::save(&app, record);
+    let task_app = app.clone();
+    let result = blocking::run(move || history_repo::save(&task_app, record)).await;
     if let Err(error) = &result {
         app_logger::log_error(&app, "history.save.failed", format!("error={}", error));
     }

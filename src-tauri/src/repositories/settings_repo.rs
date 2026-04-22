@@ -14,8 +14,9 @@ pub fn load(app: &AppHandle) -> AppResult<EnvironmentSettings> {
         .map_err(|error| format!("无法读取本地设置：{}", error))?;
 
     match payload {
-        Some(value) => serde_json::from_str(&value)
-            .map_err(|error| format!("本地设置数据格式异常：{}", error)),
+        Some(value) => {
+            serde_json::from_str(&value).map_err(|error| format!("本地设置数据格式异常：{}", error))
+        }
         None => Ok(EnvironmentSettings::default()),
     }
 }

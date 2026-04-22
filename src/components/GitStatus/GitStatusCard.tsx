@@ -20,10 +20,12 @@ export function GitStatusCard() {
   const gitCommitsLoading = useAppStore((state) => state.gitCommitsLoading)
   const gitPulling = useAppStore((state) => state.gitPulling)
   const gitSwitching = useAppStore((state) => state.gitSwitching)
+  const gitError = useAppStore((state) => state.gitError)
   const loadGitCommits = useAppStore((state) => state.loadGitCommits)
   const fetchGitUpdates = useAppStore((state) => state.fetchGitUpdates)
   const pullGitUpdates = useAppStore((state) => state.pullGitUpdates)
   const switchGitBranch = useAppStore((state) => state.switchGitBranch)
+  const clearGitError = useAppStore((state) => state.clearGitError)
 
   if (!project) {
     return null
@@ -32,7 +34,12 @@ export function GitStatusCard() {
   if (!gitStatus?.isGitRepo) {
     return (
       <Card title="Git 状态" className="panel-card" size="small">
-        <Text type="secondary">当前目录未识别为 Git 仓库。</Text>
+        <Space direction="vertical" size={10} style={{ width: '100%' }}>
+          {gitError ? (
+            <Alert type="error" showIcon closable message={gitError} onClose={clearGitError} />
+          ) : null}
+          <Text type="secondary">当前目录未识别为 Git 仓库。</Text>
+        </Space>
       </Card>
     )
   }
@@ -51,6 +58,10 @@ export function GitStatusCard() {
       extra={statusTag}
     >
       <Space direction="vertical" size={10} style={{ width: '100%' }}>
+        {gitError ? (
+          <Alert type="error" showIcon closable message={gitError} onClose={clearGitError} />
+        ) : null}
+
         <div className="git-row">
           <Text type="secondary">当前分支</Text>
           <Select
