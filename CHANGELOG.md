@@ -2,6 +2,17 @@
 
 本文件用于记录每个正式版本的更新内容。GitHub Actions 发布 `v*` 标签时，会读取对应版本小节并写入 GitHub Release 和 `latest.json.notes`，应用内“检查更新”弹窗也会展示这里的内容。
 
+## [1.0.4] - 2026-04-22
+
+### 新增
+
+- 选择 Git 项目后展示当前分支和本地 Git 状态，避免自动联网触发 Git 凭据弹窗。
+- 支持手动执行 `git fetch` 检查远端未拉取提交。
+- 支持在应用内执行 `git pull --ff-only`，只允许干净更新，不允许自动合并,并提示用户优先在代码编辑器中拉取以便处理冲突。
+- 支持展示当前 Git 分支，并可在本地分支之间切换。
+- 应用内 Git 命令默认使用 Git Credential Manager，减少 CredentialHelperSelector 弹窗。
+
+
 ## [1.0.3] - 2026-04-22
 
 ### 新增

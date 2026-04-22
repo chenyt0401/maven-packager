@@ -25,6 +25,35 @@ export interface MavenModule {
   errorMessage?: string
 }
 
+export interface GitBranch {
+  name: string
+  isCurrent: boolean
+}
+
+export interface GitRepositoryStatus {
+  isGitRepo: boolean
+  branch?: string
+  branches: GitBranch[]
+  upstream?: string
+  aheadCount: number
+  behindCount: number
+  hasRemoteUpdates: boolean
+  hasLocalChanges: boolean
+  message?: string
+}
+
+export interface GitPullResult {
+  success: boolean
+  output: string
+  status: GitRepositoryStatus
+}
+
+export interface GitSwitchBranchResult {
+  success: boolean
+  output: string
+  status: GitRepositoryStatus
+}
+
 export interface BuildEnvironment {
   javaHome?: string
   javaVersion?: string

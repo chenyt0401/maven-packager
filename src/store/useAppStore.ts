@@ -9,6 +9,7 @@ import type {
     BuildStatus,
     BuildTemplate,
     EnvironmentSettings,
+    GitRepositoryStatus,
     MavenModule,
     MavenProject,
     PersistedBuildStatus,
@@ -28,11 +29,19 @@ interface AppState {
   logs: BuildLogEvent[]
   history: BuildHistoryRecord[]
   templates: BuildTemplate[]
+  gitStatus?: GitRepositoryStatus
+  gitChecking: boolean
+  gitPulling: boolean
+  gitSwitching: boolean
   loading: boolean
   error?: string
   initialize: () => Promise<void>
   chooseProject: () => Promise<void>
   parseProjectPath: (rootPath: string) => Promise<void>
+  checkGitStatus: (rootPath?: string) => Promise<void>
+  fetchGitUpdates: () => Promise<void>
+  pullGitUpdates: () => Promise<void>
+  switchGitBranch: (branchName: string) => Promise<void>
   setSelectedModule: (moduleId: string) => void
   setSelectedModules: (moduleIds: string[]) => void
   selectAllProject: () => void
@@ -111,6 +120,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   templates: [],
   selectedModules: [],
   selectedModuleIds: [],
+  gitChecking: false,
+  gitPulling: false,
+  gitSwitching: false,
   loading: false,
 
   initialize: async () => {
@@ -140,7 +152,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   parseProjectPath: async (rootPath: string) => {
-    set({ loading: true, error: undefined, logs: [] })
+    set({ loading: true, error: undefined, logs: [], gitStatus: undefined })
     try {
       const [project, environment] = await Promise.all([
         api.parseMavenProject(rootPath),
@@ -160,10 +172,93 @@ export const useAppStore = create<AppState>((set, get) => ({
       })
       await api.saveLastProjectPath(project.rootPath)
       await get().refreshCommandPreview()
+      void get().checkGitStatus(project.rootPath)
     } catch (error) {
       set({ error: getErrorMessage(error) })
     } finally {
       set({ loading: false })
+    }
+  },
+
+  checkGitStatus: async (rootPath?: string) => {
+    const targetPath = rootPath ?? get().project?.rootPath
+    if (!targetPath) {
+      return
+    }
+
+    set({ gitChecking: true })
+    try {
+      const gitStatus = await api.checkGitStatus(targetPath)
+      set({ gitStatus })
+    } catch (error) {
+      set({
+        gitStatus: {
+          isGitRepo: true,
+          branches: [],
+          aheadCount: 0,
+          behindCount: 0,
+          hasRemoteUpdates: false,
+          hasLocalChanges: false,
+          message: getErrorMessage(error),
+        },
+      })
+    } finally {
+      set({ gitChecking: false })
+    }
+  },
+
+  fetchGitUpdates: async () => {
+    const targetPath = get().project?.rootPath
+    if (!targetPath) {
+      return
+    }
+
+    set({ gitChecking: true, error: undefined })
+    try {
+      const gitStatus = await api.fetchGitUpdates(targetPath)
+      set({ gitStatus })
+    } catch (error) {
+      set({ error: getErrorMessage(error) })
+    } finally {
+      set({ gitChecking: false })
+    }
+  },
+
+  pullGitUpdates: async () => {
+    const targetPath = get().project?.rootPath
+    if (!targetPath) {
+      return
+    }
+
+    set({ gitPulling: true, error: undefined })
+    try {
+      const result = await api.pullGitUpdates(targetPath)
+      set({ gitStatus: result.status })
+      await get().parseProjectPath(targetPath)
+    } catch (error) {
+      set({ error: getErrorMessage(error) })
+      await get().checkGitStatus(targetPath)
+    } finally {
+      set({ gitPulling: false })
+    }
+  },
+
+  switchGitBranch: async (branchName: string) => {
+    const targetPath = get().project?.rootPath
+    if (!targetPath) {
+      return
+    }
+
+    set({ gitSwitching: true, error: undefined })
+    try {
+      const result = await api.switchGitBranch(targetPath, branchName)
+      set({ gitStatus: result.status })
+      await get().parseProjectPath(targetPath)
+    } catch (error) {
+      set({ error: getErrorMessage(error) })
+      await get().checkGitStatus(targetPath)
+    } finally {
+      set({ gitSwitching: false })
     }
   },
 

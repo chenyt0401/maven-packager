@@ -5,16 +5,19 @@ import {open} from '@tauri-apps/plugin-dialog'
 import {relaunch} from '@tauri-apps/plugin-process'
 import {check, type DownloadEvent, type Update} from '@tauri-apps/plugin-updater'
 import type {
-    BuildCommandPayload,
-    BuildEnvironment,
-    BuildFinishedEvent,
-    BuildHistoryRecord,
-    BuildLogEvent,
-    BuildOptions,
-    BuildTemplate,
-    EnvironmentSettings,
-    MavenProject,
-    StartBuildPayload,
+  BuildCommandPayload,
+  BuildEnvironment,
+  BuildFinishedEvent,
+  BuildHistoryRecord,
+  BuildLogEvent,
+  BuildOptions,
+  BuildTemplate,
+  EnvironmentSettings,
+  GitPullResult,
+  GitRepositoryStatus,
+  GitSwitchBranchResult,
+  MavenProject,
+  StartBuildPayload,
 } from '../types/domain'
 
 type TauriWindow = Window & { __TAURI_INTERNALS__?: unknown }
@@ -148,6 +151,18 @@ export const api = {
 
   openPathInExplorer: (path: string) =>
     invoke<void>('open_path_in_explorer', { path }),
+
+  checkGitStatus: (rootPath: string) =>
+    invoke<GitRepositoryStatus>('check_git_status', { rootPath }),
+
+  fetchGitUpdates: (rootPath: string) =>
+    invoke<GitRepositoryStatus>('fetch_git_updates', { rootPath }),
+
+  pullGitUpdates: (rootPath: string) =>
+    invoke<GitPullResult>('pull_git_updates', { rootPath }),
+
+  switchGitBranch: (rootPath: string, branchName: string) =>
+    invoke<GitSwitchBranchResult>('switch_git_branch', { rootPath, branchName }),
 }
 
 export async function registerBuildEvents(
