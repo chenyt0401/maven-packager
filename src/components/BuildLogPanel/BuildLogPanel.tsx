@@ -59,6 +59,7 @@ export function BuildLogPanel() {
   const logs = useAppStore((state) => state.logs)
   const diagnosis = useAppStore((state) => state.diagnosis)
   const buildStatus = useAppStore((state) => state.buildStatus)
+  const buildCancelling = useAppStore((state) => state.buildCancelling)
   const cancelBuild = useAppStore((state) => state.cancelBuild)
   const clearBuildLogs = useAppStore((state) => state.clearBuildLogs)
   const panelRef = useRef<HTMLDivElement>(null)
@@ -124,7 +125,11 @@ export function BuildLogPanel() {
         extra={
           <Space wrap>
             <Tag color={statusColor[buildStatus]}>{statusText[buildStatus]}</Tag>
-            <Button size="small" disabled={buildStatus !== 'RUNNING'} onClick={() => void cancelBuild()}>
+            <Button
+              size="small"
+              disabled={buildStatus !== 'RUNNING' || buildCancelling}
+              onClick={() => void cancelBuild()}
+            >
               停止
             </Button>
             <Button size="small" onClick={clearBuildLogs}>

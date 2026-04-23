@@ -31,3 +31,4 @@ encoding_rs = "0.8"
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
 rusqlite = { version = "0.32", features = ["bundled"] }
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading"] }

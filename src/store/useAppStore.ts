@@ -31,6 +31,7 @@ interface AppState {
   buildOptions: BuildOptions
   buildStatus: BuildStatus
   currentBuildId?: string
+  buildCancelling: boolean
   startedAt?: number
   durationMs: number
   logs: BuildLogEvent[]
@@ -132,6 +133,19 @@ const toHistoryStatus = (status: PersistedBuildStatus): BuildStatus => status
 
 const getErrorMessage = (error: unknown) =>
   error instanceof Error ? error.message : String(error)
+
+const appendSystemLog = (
+  logs: BuildLogEvent[],
+  buildId: string | undefined,
+  line: string,
+): BuildLogEvent[] => [
+  ...logs.slice(-4999),
+  {
+    buildId: buildId ?? 'pending',
+    stream: 'system',
+    line,
+  },
+]
 
 const createProfileFromEnvironment = (
   name: string,
@@ -241,6 +255,7 @@ const isSameBuildLogLine = (
 export const useAppStore = create<AppState>((set, get) => ({
   buildOptions: createDefaultBuildOptions(),
   buildStatus: 'IDLE',
+  buildCancelling: false,
   durationMs: 0,
   logs: [],
   diagnosis: undefined,
@@ -293,6 +308,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({
       loading: true,
       error: undefined,
+      project: undefined,
+      selectedModule: undefined,
+      selectedModules: [],
+      selectedModuleIds: [],
       logs: [],
       diagnosis: undefined,
       artifacts: [],
@@ -315,6 +334,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         buildOptions,
         buildStatus: 'IDLE',
         currentBuildId: undefined,
+        buildCancelling: false,
         durationMs: 0,
       })
       await api.saveLastProjectPath(project.rootPath)
@@ -698,21 +718,58 @@ export const useAppStore = create<AppState>((set, get) => ({
         useMavenWrapper: environment.useMavenWrapper,
       })
       set({ currentBuildId })
+      if (get().buildCancelling) {
+        set((state) => ({
+          logs: appendSystemLog(state.logs, currentBuildId, '构建进程已启动，继续发送停止请求。'),
+        }))
+        try {
+          await api.cancelBuild(currentBuildId)
+        } catch (cancelError) {
+          const message = getErrorMessage(cancelError)
+          set((state) => ({
+            logs: appendSystemLog(state.logs, currentBuildId, `停止请求发送失败：${message}`),
+          }))
+          throw cancelError
+        }
+      }
     } catch (error) {
-      set({ buildStatus: 'FAILED', error: getErrorMessage(error) })
+      const message = getErrorMessage(error)
+      set((state) => ({
+        buildStatus: 'FAILED',
+        buildCancelling: false,
+        error: message,
+        logs: appendSystemLog(state.logs, get().currentBuildId, `构建启动或停止请求失败：${message}`),
+      }))
     }
   },
 
   cancelBuild: async () => {
     const currentBuildId = get().currentBuildId
+    set({ buildCancelling: true })
     if (!currentBuildId) {
+      set((state) => ({
+        logs: appendSystemLog(state.logs, undefined, '已请求停止，等待构建进程初始化完成。'),
+      }))
       return
     }
+    set((state) => ({
+      logs: appendSystemLog(state.logs, currentBuildId, '已请求停止构建。'),
+    }))
     try {
+      set((state) => ({
+        logs: appendSystemLog(state.logs, currentBuildId, `正在调用后端停止命令：cancel_build(${currentBuildId})`),
+      }))
       await api.cancelBuild(currentBuildId)
-      set({ buildStatus: 'CANCELLED' })
+      set((state) => ({
+        logs: appendSystemLog(state.logs, currentBuildId, '后端停止命令已返回，等待构建进程退出。'),
+      }))
     } catch (error) {
-      set({ error: getErrorMessage(error) })
+      const message = getErrorMessage(error)
+      set((state) => ({
+        buildCancelling: false,
+        error: message,
+        logs: appendSystemLog(state.logs, currentBuildId, `停止请求发送失败：${message}`),
+      }))
     }
   },
 
@@ -765,6 +822,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       buildStatus: toHistoryStatus(event.status),
       durationMs: event.durationMs,
       currentBuildId: undefined,
+      buildCancelling: false,
       diagnosis,
     })
   },

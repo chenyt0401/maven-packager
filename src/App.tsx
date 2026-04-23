@@ -2,11 +2,11 @@ import {useEffect, useState} from 'react'
 import type {TabsProps} from 'antd'
 import {App as AntApp, ConfigProvider, Layout, Menu, Space, Tabs, Tag, theme, Typography} from 'antd'
 import {
-    AppstoreAddOutlined,
-    BranchesOutlined,
-    FolderOpenOutlined,
-    FolderOutlined,
-    NodeIndexOutlined,
+  AppstoreAddOutlined,
+  BranchesOutlined,
+  FolderOpenOutlined,
+  FolderOutlined,
+  NodeIndexOutlined,
 } from '@ant-design/icons'
 import {AdvancedOptionsPanel} from './components/AdvancedOptions/AdvancedOptionsPanel'
 import {BuildLogPanel} from './components/BuildLogPanel/BuildLogPanel'
@@ -189,8 +189,8 @@ function App() {
             <Content className="app-content">
               <div className="workbench-grid">
                 <section className="workbench-column build-column">
-                  <CommandPreview />
                   <Tabs items={buildTabs} className="panel-tabs build-tabs" />
+                  <CommandPreview />
                 </section>
                 <section className="workbench-column output-column">
                   <Tabs items={outputTabs} className="panel-tabs output-tabs" />

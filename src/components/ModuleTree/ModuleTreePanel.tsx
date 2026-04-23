@@ -1,4 +1,4 @@
-import {Alert, Button, Card, Empty, Input, Space, Tooltip, Tree, Typography} from 'antd'
+import {Alert, Button, Card, Empty, Input, Space, Spin, Tooltip, Tree, Typography} from 'antd'
 import type {DataNode} from 'antd/es/tree'
 import type {Key} from 'react'
 import {useMemo, useState} from 'react'
@@ -57,6 +57,7 @@ const flattenModuleIds = (modules: MavenModule[]): string[] =>
 
 export function ModuleTreePanel() {
   const project = useAppStore((state) => state.project)
+  const loading = useAppStore((state) => state.loading)
   const selectedModule = useAppStore((state) => state.selectedModule)
   const selectedModules = useAppStore((state) => state.selectedModules)
   const selectedModuleIds = useAppStore((state) => state.selectedModuleIds)
@@ -124,11 +125,17 @@ export function ModuleTreePanel() {
             </Button>
           </Space>
         ) : null}
-        {!project ? <Empty description="等待选择项目" image={Empty.PRESENTED_IMAGE_SIMPLE} /> : null}
+        {loading ? (
+          <div className="module-loading-state">
+            <Spin />
+            <Text type="secondary">正在解析项目模块...</Text>
+          </div>
+        ) : null}
+        {!loading && !project ? <Empty description="等待选择项目" image={Empty.PRESENTED_IMAGE_SIMPLE} /> : null}
         {project && treeData.length === 0 ? (
           <Empty description="没有匹配模块" image={Empty.PRESENTED_IMAGE_SIMPLE} />
         ) : null}
-        {treeData.length > 0 ? (
+        {!loading && treeData.length > 0 ? (
           <Tree
             blockNode
             checkable
