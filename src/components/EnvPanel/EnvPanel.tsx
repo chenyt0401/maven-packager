@@ -1,50 +1,65 @@
-import {Alert, Button, Card, Collapse, Input, Segmented, Space, Tag, Typography} from 'antd'
-import {FileSearchOutlined, FolderOpenOutlined, ReloadOutlined} from '@ant-design/icons'
+import {Alert, Button, Card, Collapse, Input, Popconfirm, Segmented, Select, Space, Tag, Typography} from 'antd'
+import {DeleteOutlined, FileSearchOutlined, FolderOpenOutlined, ReloadOutlined, SaveOutlined,} from '@ant-design/icons'
+import {useState} from 'react'
 import {buildEnvironmentCenterItems, sourceText, statusColor,} from '../../services/environmentCenterService'
 import {selectLocalDirectory, selectLocalFile} from '../../services/tauri-api'
 import {useAppStore} from '../../store/useAppStore'
-import type {EnvironmentSettings} from '../../types/domain'
+import type {EnvironmentProfile} from '../../types/domain'
 
 const { Text } = Typography
 
 export function EnvPanel() {
   const environment = useAppStore((state) => state.environment)
+  const environmentSettings = useAppStore((state) => state.environmentSettings)
   const updateEnvironment = useAppStore((state) => state.updateEnvironment)
   const refreshEnvironment = useAppStore((state) => state.refreshEnvironment)
+  const applyEnvironmentProfile = useAppStore((state) => state.applyEnvironmentProfile)
+  const saveEnvironmentProfile = useAppStore((state) => state.saveEnvironmentProfile)
+  const deleteEnvironmentProfile = useAppStore((state) => state.deleteEnvironmentProfile)
+  const [profileName, setProfileName] = useState('')
 
   const javaValue = environment?.javaHome ?? ''
   const mavenValue = environment?.mavenHome ?? environment?.mavenPath ?? ''
   const settingsValue = environment?.settingsXmlPath ?? ''
   const localRepoValue = environment?.localRepoPath ?? ''
+  const profiles = environmentSettings?.profiles ?? []
+  const activeProfile = profiles.find((profile) => profile.id === environmentSettings?.activeProfileId)
+  const profileValue = environmentSettings?.activeProfileId ?? '__auto__'
   const items = buildEnvironmentCenterItems(environment)
   const currentExecutor = environment?.useMavenWrapper
     ? environment.mavenWrapperPath ?? 'mvnw.cmd'
     : environment?.mavenPath ?? 'mvn.cmd'
 
-  const currentSettings = (patch: Partial<EnvironmentSettings>): EnvironmentSettings => ({
-    javaHome: environment?.javaSource === 'manual' ? environment.javaHome : undefined,
-    mavenHome: environment?.mavenSource === 'manual' ? environment.mavenHome : undefined,
-    settingsXmlPath: environment?.settingsXmlSource === 'manual'
-      ? environment.settingsXmlPath
-      : undefined,
-    localRepoPath: environment?.localRepoSource === 'manual'
-      ? environment.localRepoPath
-      : undefined,
-    useMavenWrapper: environment?.useMavenWrapper ?? false,
-    ...patch,
-  })
+  const updateActiveProfile = (patch: Partial<EnvironmentProfile>) => {
+    const profile: EnvironmentProfile = {
+      id: activeProfile?.id ?? crypto.randomUUID(),
+      name: activeProfile?.name ?? (profileName.trim() || '自定义环境'),
+      useMavenWrapper: environment?.useMavenWrapper ?? false,
+      ...activeProfile,
+      ...patch,
+      updatedAt: new Date().toISOString(),
+    }
+    void updateEnvironment({
+      ...(environmentSettings ?? { profiles: [] }),
+      activeProfileId: profile.id,
+      profiles: [
+        profile,
+        ...profiles.filter((item) => item.id !== profile.id),
+      ],
+    })
+  }
 
   const saveJavaHome = (javaHome?: string) =>
-    updateEnvironment(currentSettings({ javaHome }))
+    updateActiveProfile({ javaHome })
 
   const saveMavenHome = (mavenHome?: string) =>
-    updateEnvironment(currentSettings({ mavenHome }))
+    updateActiveProfile({ mavenHome })
 
   const saveSettingsXml = (settingsXmlPath?: string) =>
-    updateEnvironment(currentSettings({ settingsXmlPath }))
+    updateActiveProfile({ settingsXmlPath })
 
   const saveLocalRepo = (localRepoPath?: string) =>
-    updateEnvironment(currentSettings({ localRepoPath }))
+    updateActiveProfile({ localRepoPath })
 
   return (
     <Card
@@ -62,6 +77,59 @@ export function EnvPanel() {
       }
     >
       <Space direction="vertical" size={10} style={{ width: '100%' }}>
+        <div className="env-profile-panel">
+          <Select
+            className="env-profile-select"
+            value={profileValue}
+            options={[
+              { label: '自动识别', value: '__auto__' },
+              ...profiles.map((profile) => ({
+                label: profile.name,
+                value: profile.id,
+              })),
+            ]}
+            onChange={(value) => {
+              if (value === '__auto__') {
+                void updateEnvironment({
+                  ...(environmentSettings ?? { profiles: [] }),
+                  activeProfileId: undefined,
+                  profiles,
+                })
+                return
+              }
+              void applyEnvironmentProfile(value)
+            }}
+          />
+          <div className="env-profile-actions">
+            <Input
+              className="env-profile-name"
+              placeholder={activeProfile?.name ?? '方案名称'}
+              value={profileName}
+              onChange={(event) => setProfileName(event.target.value)}
+              onPressEnter={() => {
+                void saveEnvironmentProfile(profileName || activeProfile?.name || '自定义环境')
+                setProfileName('')
+              }}
+            />
+            <Button
+              icon={<SaveOutlined />}
+              onClick={() => {
+                void saveEnvironmentProfile(profileName || activeProfile?.name || '自定义环境')
+                setProfileName('')
+              }}
+            />
+            <Popconfirm
+              title="删除当前环境方案？"
+              okText="删除"
+              cancelText="取消"
+              disabled={!activeProfile}
+              onConfirm={() => activeProfile && void deleteEnvironmentProfile(activeProfile.id)}
+            >
+              <Button danger disabled={!activeProfile} icon={<DeleteOutlined />} />
+            </Popconfirm>
+          </div>
+        </div>
+
         <div className="env-executor">
           <Text strong>当前执行器</Text>
           <Text className="env-summary-path" title={currentExecutor}>
@@ -104,9 +172,7 @@ export function EnvPanel() {
                   },
                 ]}
                 onChange={(value) =>
-                  void updateEnvironment(
-                    currentSettings({ useMavenWrapper: value === 'wrapper' }),
-                  )
+                  updateActiveProfile({ useMavenWrapper: value === 'wrapper' })
                 }
               />
             </div>
@@ -127,6 +193,7 @@ export function EnvPanel() {
               children: (
                 <Space direction="vertical" size={10} style={{ width: '100%' }}>
                   <div className="env-row">
+                    <Text className="env-row-label">JDK</Text>
                     <Input.Group compact>
                       <Input
                         key={`java-${javaValue}`}
@@ -140,19 +207,19 @@ export function EnvPanel() {
                       />
                       <Button
                         icon={<FolderOpenOutlined />}
+                        title="选择 JDK 目录"
                         onClick={async () => {
                           const selected = await selectLocalDirectory('选择 JDK 目录')
                           if (selected) {
                             await saveJavaHome(selected)
                           }
                         }}
-                      >
-                        JDK
-                      </Button>
+                      />
                     </Input.Group>
                   </div>
 
                   <div className="env-row">
+                    <Text className="env-row-label">Maven</Text>
                     <Input.Group compact>
                       <Input
                         key={`maven-${mavenValue}`}
@@ -166,30 +233,29 @@ export function EnvPanel() {
                       />
                       <Button
                         icon={<FileSearchOutlined />}
+                        title="选择 mvn.cmd"
                         onClick={async () => {
                           const selected = await selectLocalFile('选择 mvn.cmd')
                           if (selected) {
                             await saveMavenHome(selected)
                           }
                         }}
-                      >
-                        文件
-                      </Button>
+                      />
                       <Button
                         icon={<FolderOpenOutlined />}
+                        title="选择 Maven 目录"
                         onClick={async () => {
                           const selected = await selectLocalDirectory('选择 Maven 目录')
                           if (selected) {
                             await saveMavenHome(selected)
                           }
                         }}
-                      >
-                        目录
-                      </Button>
+                      />
                     </Input.Group>
                   </div>
 
                   <div className="env-row">
+                    <Text className="env-row-label">settings.xml</Text>
                     <Input.Group compact>
                       <Input
                         key={`settings-${settingsValue}`}
@@ -203,19 +269,19 @@ export function EnvPanel() {
                       />
                       <Button
                         icon={<FileSearchOutlined />}
+                        title="选择 settings.xml"
                         onClick={async () => {
                           const selected = await selectLocalFile('选择 settings.xml')
                           if (selected) {
                             await saveSettingsXml(selected)
                           }
                         }}
-                      >
-                        settings
-                      </Button>
+                      />
                     </Input.Group>
                   </div>
 
                   <div className="env-row">
+                    <Text className="env-row-label">本地仓库</Text>
                     <Input.Group compact>
                       <Input
                         key={`repo-${localRepoValue}`}
@@ -229,15 +295,14 @@ export function EnvPanel() {
                       />
                       <Button
                         icon={<FolderOpenOutlined />}
+                        title="选择本地仓库目录"
                         onClick={async () => {
                           const selected = await selectLocalDirectory('选择本地仓库目录')
                           if (selected) {
                             await saveLocalRepo(selected)
                           }
                         }}
-                      >
-                        仓库
-                      </Button>
+                      />
                     </Input.Group>
                   </div>
                 </Space>

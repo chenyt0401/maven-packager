@@ -23,13 +23,10 @@ pub async fn detect_environment(app: AppHandle, root_path: String) -> AppResult<
         &app,
         "environment.detect.result",
         format!(
-            "root_path={}, saved_java_home={}, saved_maven_home={}, saved_settings_xml={}, saved_local_repo={}, saved_use_maven_wrapper={}, java_home={}, java_path={}, java_version={}, maven_home={}, maven_path={}, maven_version={}, settings_xml={}, local_repo={}, git_path={}, has_maven_wrapper={}, use_maven_wrapper={}, status={:?}, errors={}",
+            "root_path={}, active_profile={}, profile_count={}, java_home={}, java_path={}, java_version={}, maven_home={}, maven_path={}, maven_version={}, settings_xml={}, local_repo={}, git_path={}, has_maven_wrapper={}, use_maven_wrapper={}, status={:?}, errors={}",
             log_root_path,
-            settings.java_home.as_deref().unwrap_or("<empty>"),
-            settings.maven_home.as_deref().unwrap_or("<empty>"),
-            settings.settings_xml_path.as_deref().unwrap_or("<empty>"),
-            settings.local_repo_path.as_deref().unwrap_or("<empty>"),
-            settings.use_maven_wrapper,
+            settings.active_profile_id.as_deref().unwrap_or("<auto>"),
+            settings.profiles.len(),
             environment.java_home.as_deref().unwrap_or("<empty>"),
             environment.java_path.as_deref().unwrap_or("<empty>"),
             environment.java_version.as_deref().unwrap_or("<empty>"),
@@ -61,12 +58,9 @@ pub async fn load_environment_settings(app: AppHandle) -> AppResult<EnvironmentS
             &app,
             "settings.load.success",
             format!(
-                "java_home={}, maven_home={}, settings_xml={}, local_repo={}, use_maven_wrapper={}, last_project_path={}",
-                settings.java_home.as_deref().unwrap_or("<empty>"),
-                settings.maven_home.as_deref().unwrap_or("<empty>"),
-                settings.settings_xml_path.as_deref().unwrap_or("<empty>"),
-                settings.local_repo_path.as_deref().unwrap_or("<empty>"),
-                settings.use_maven_wrapper,
+                "active_profile={}, profile_count={}, last_project_path={}",
+                settings.active_profile_id.as_deref().unwrap_or("<auto>"),
+                settings.profiles.len(),
                 settings.last_project_path.as_deref().unwrap_or("<empty>")
             ),
         ),
@@ -86,23 +80,17 @@ pub async fn save_environment_settings(
         &app,
         "settings.save.start",
         format!(
-            "java_home={}, maven_home={}, settings_xml={}, local_repo={}, use_maven_wrapper={}, last_project_path={}",
-            settings.java_home.as_deref().unwrap_or("<empty>"),
-            settings.maven_home.as_deref().unwrap_or("<empty>"),
-            settings.settings_xml_path.as_deref().unwrap_or("<empty>"),
-            settings.local_repo_path.as_deref().unwrap_or("<empty>"),
-            settings.use_maven_wrapper,
+            "active_profile={}, profile_count={}, last_project_path={}",
+            settings.active_profile_id.as_deref().unwrap_or("<auto>"),
+            settings.profiles.len(),
             settings.last_project_path.as_deref().unwrap_or("<empty>")
         ),
     );
     let task_app = app.clone();
     let result = blocking::run(move || {
         let mut current = settings_repo::load(&task_app).unwrap_or_default();
-        current.java_home = settings.java_home;
-        current.maven_home = settings.maven_home;
-        current.settings_xml_path = settings.settings_xml_path;
-        current.local_repo_path = settings.local_repo_path;
-        current.use_maven_wrapper = settings.use_maven_wrapper;
+        current.active_profile_id = settings.active_profile_id;
+        current.profiles = settings.profiles;
         if settings.last_project_path.is_some() {
             current.last_project_path = settings.last_project_path.clone();
         }

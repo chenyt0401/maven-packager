@@ -2,6 +2,7 @@ use crate::models::environment::{
     BuildEnvironment, EnvironmentSettings, EnvironmentSource, EnvironmentStatus,
 };
 use std::env;
+use std::fs;
 use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 use std::process::Command;
@@ -10,7 +11,17 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 pub fn detect_environment(root_path: &str, settings: EnvironmentSettings) -> BuildEnvironment {
     let mut errors = Vec::new();
-    let (java_home, java_path, java_source) = resolve_java(settings.java_home.as_deref());
+    let active_profile = settings
+        .active_profile_id
+        .as_deref()
+        .and_then(|profile_id| {
+            settings
+                .profiles
+                .iter()
+                .find(|profile| profile.id == profile_id)
+        });
+    let (java_home, java_path, java_source) =
+        resolve_java(active_profile.and_then(|profile| profile.java_home.as_deref()));
     let java_version = java_path
         .as_deref()
         .and_then(|path| run_version(path, &["-version"]))
@@ -23,11 +34,12 @@ pub fn detect_environment(root_path: &str, settings: EnvironmentSettings) -> Bui
         errors.push("无法执行 java -version，请检查 JDK 是否可用。".to_string());
     }
 
-    let (maven_path, maven_source) = resolve_maven(settings.maven_home.as_deref());
+    let (maven_path, maven_source) =
+        resolve_maven(active_profile.and_then(|profile| profile.maven_home.as_deref()));
     let maven_home = maven_path
         .as_deref()
         .and_then(|path| maven_home_from_path(&PathBuf::from(path)))
-        .or_else(|| settings.maven_home.clone());
+        .or_else(|| active_profile.and_then(|profile| profile.maven_home.clone()));
     let maven_version = maven_path
         .as_deref()
         .and_then(|path| run_version(path, &["-version"]))
@@ -48,18 +60,21 @@ pub fn detect_environment(root_path: &str, settings: EnvironmentSettings) -> Bui
     } else {
         EnvironmentSource::Missing
     };
-    if settings.use_maven_wrapper && !has_maven_wrapper {
+    let use_maven_wrapper = active_profile.is_some_and(|profile| profile.use_maven_wrapper);
+    if use_maven_wrapper && !has_maven_wrapper {
         errors.push("已启用 Maven Wrapper，但项目根目录未发现 mvnw.cmd。".to_string());
     }
 
     let (settings_xml_path, settings_xml_source) = detect_settings_xml(
-        settings.settings_xml_path.as_deref(),
+        active_profile.and_then(|profile| profile.settings_xml_path.as_deref()),
         maven_path.as_deref(),
         maven_home.as_deref(),
     );
     let (local_repo_path, local_repo_source) = detect_local_repo(
-        settings.local_repo_path.as_deref(),
+        active_profile.and_then(|profile| profile.local_repo_path.as_deref()),
         settings_xml_path.as_deref(),
+        maven_path.as_deref(),
+        maven_home.as_deref(),
     );
     let (git_path, git_source) = first_where("git")
         .map(|path| (Some(path), EnvironmentSource::Auto))
@@ -91,7 +106,7 @@ pub fn detect_environment(root_path: &str, settings: EnvironmentSettings) -> Bui
         maven_wrapper_path: wrapper_path
             .filter(|_| has_maven_wrapper)
             .map(path_to_string),
-        use_maven_wrapper: settings.use_maven_wrapper && has_maven_wrapper,
+        use_maven_wrapper: use_maven_wrapper && has_maven_wrapper,
         wrapper_source,
         git_path,
         git_version,
@@ -278,21 +293,25 @@ fn maven_home_settings_xml(path: &PathBuf) -> Option<String> {
 fn detect_local_repo(
     saved_local_repo: Option<&str>,
     settings_xml_path: Option<&str>,
+    maven_path: Option<&str>,
+    saved_maven_home: Option<&str>,
 ) -> (Option<String>, EnvironmentSource) {
     if let Some(path) = saved_local_repo {
-        let path = PathBuf::from(path);
-        if path.exists() {
-            return (Some(path_to_string(path)), EnvironmentSource::Manual);
+        let path = path.trim();
+        if !path.is_empty() {
+            return (
+                Some(path_to_string(resolve_maven_path_value(path))),
+                EnvironmentSource::Manual,
+            );
         }
     }
 
-    if let Some(path) = settings_xml_path
-        .and_then(|path| std::fs::read_to_string(path).ok())
-        .and_then(|content| extract_local_repository(&content))
-        .map(PathBuf::from)
-        .filter(|path| path.exists())
+    for settings_path in
+        local_repo_settings_candidates(settings_xml_path, maven_path, saved_maven_home)
     {
-        return (Some(path_to_string(path)), EnvironmentSource::Auto);
+        if let Some(path) = detect_local_repository_from_settings(&settings_path) {
+            return (Some(path), EnvironmentSource::Auto);
+        }
     }
 
     let default_repo = user_m2_path().join("repository");
@@ -306,20 +325,87 @@ fn detect_local_repo(
     )
 }
 
+fn local_repo_settings_candidates(
+    settings_xml_path: Option<&str>,
+    maven_path: Option<&str>,
+    saved_maven_home: Option<&str>,
+) -> Vec<String> {
+    let mut candidates = Vec::new();
+    if let Some(path) = settings_xml_path {
+        push_unique_path(&mut candidates, path.to_string());
+    }
+    if let Some(path) =
+        saved_maven_home.and_then(|path| maven_home_settings_xml(&PathBuf::from(path)))
+    {
+        push_unique_path(&mut candidates, path);
+    }
+    if let Some(path) = maven_path.and_then(|path| maven_home_settings_xml(&PathBuf::from(path))) {
+        push_unique_path(&mut candidates, path);
+    }
+    candidates
+}
+
+fn push_unique_path(paths: &mut Vec<String>, path: String) {
+    if !paths.iter().any(|item| item.eq_ignore_ascii_case(&path)) {
+        paths.push(path);
+    }
+}
+
+fn detect_local_repository_from_settings(settings_xml_path: &str) -> Option<String> {
+    let content = fs::read_to_string(settings_xml_path).ok()?;
+    extract_local_repository(&content)
+        .map(|value| path_to_string(resolve_maven_path_value(&value)))
+}
+
 fn extract_local_repository(content: &str) -> Option<String> {
-    let start_tag = "<localRepository>";
-    let end_tag = "</localRepository>";
-    let start = content.find(start_tag)? + start_tag.len();
-    let end = content[start..].find(end_tag)? + start;
-    let value = content[start..end].trim();
+    let document = roxmltree::Document::parse(content).ok()?;
+    let value = document
+        .descendants()
+        .find(|node| node.is_element() && node.tag_name().name() == "localRepository")?
+        .text()?
+        .trim();
+
     (!value.is_empty()).then(|| value.to_string())
 }
 
-fn user_m2_path() -> PathBuf {
+fn resolve_maven_path_value(value: &str) -> PathBuf {
+    let expanded = expand_maven_path_value(value.trim());
+    if expanded == "~" {
+        return user_home().unwrap_or_else(|| PathBuf::from(expanded));
+    }
+    if let Some(rest) = expanded.strip_prefix("~/").or_else(|| expanded.strip_prefix("~\\")) {
+        if let Some(home) = user_home() {
+            return home.join(rest);
+        }
+    }
+    PathBuf::from(expanded)
+}
+
+fn expand_maven_path_value(value: &str) -> String {
+    let mut result = value.to_string();
+    if let Some(home) = user_home() {
+        let home = home.to_string_lossy();
+        result = result.replace("${user.home}", &home);
+    }
+
+    for (name, value) in env::vars() {
+        result = result.replace(&format!("${{env.{}}}", name), &value);
+        result = result.replace(&format!("${{{}}}", name), &value);
+    }
+
+    result
+}
+
+fn user_home() -> Option<PathBuf> {
     env::var("USERPROFILE")
+        .or_else(|_| env::var("HOME"))
+        .ok()
+        .filter(|home| !home.trim().is_empty())
         .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("."))
-        .join(".m2")
+}
+
+fn user_m2_path() -> PathBuf {
+    user_home().unwrap_or_else(|| PathBuf::from(".")).join(".m2")
 }
 
 fn environment_status(errors: &[String]) -> EnvironmentStatus {
@@ -385,4 +471,51 @@ fn is_windows_script(program: &str) -> bool {
 
 fn path_to_string(path: impl Into<PathBuf>) -> String {
     path.into().to_string_lossy().replace('/', "\\")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::extract_local_repository;
+
+    #[test]
+    fn extracts_local_repository_with_namespace() {
+        let xml = r#"
+            <settings xmlns="http://maven.apache.org/SETTINGS/1.0.0">
+              <localRepository>D:\maven-repo</localRepository>
+            </settings>
+        "#;
+
+        assert_eq!(
+            extract_local_repository(xml),
+            Some("D:\\maven-repo".to_string())
+        );
+    }
+
+    #[test]
+    fn ignores_blank_local_repository() {
+        let xml = r#"
+            <settings>
+              <localRepository>   </localRepository>
+            </settings>
+        "#;
+
+        assert_eq!(extract_local_repository(xml), None);
+    }
+
+    #[test]
+    fn extracts_local_repository_with_comments_and_whitespace() {
+        let xml = r#"
+            <settings>
+              <!-- 本地仓库 -->
+              <localRepository>
+                ${user.home}/repo
+              </localRepository>
+            </settings>
+        "#;
+
+        assert_eq!(
+            extract_local_repository(xml),
+            Some("${user.home}/repo".to_string())
+        );
+    }
 }

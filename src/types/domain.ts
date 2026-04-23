@@ -196,11 +196,19 @@ export interface BuildTemplate {
 }
 
 export interface EnvironmentSettings {
+  activeProfileId?: string
+  profiles: EnvironmentProfile[]
+  lastProjectPath?: string
+  projectPaths?: string[]
+}
+
+export interface EnvironmentProfile {
+  id: string
+  name: string
   javaHome?: string
   mavenHome?: string
   settingsXmlPath?: string
   localRepoPath?: string
   useMavenWrapper: boolean
-  lastProjectPath?: string
-  projectPaths?: string[]
+  updatedAt?: string
 }

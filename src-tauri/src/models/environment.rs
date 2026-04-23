@@ -3,14 +3,25 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EnvironmentSettings {
+    pub active_profile_id: Option<String>,
+    #[serde(default)]
+    pub profiles: Vec<EnvironmentProfile>,
+    pub last_project_path: Option<String>,
+    #[serde(default)]
+    pub project_paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EnvironmentProfile {
+    pub id: String,
+    pub name: String,
     pub java_home: Option<String>,
     pub maven_home: Option<String>,
     pub settings_xml_path: Option<String>,
     pub local_repo_path: Option<String>,
     pub use_maven_wrapper: bool,
-    pub last_project_path: Option<String>,
-    #[serde(default)]
-    pub project_paths: Vec<String>,
+    pub updated_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
