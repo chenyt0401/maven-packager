@@ -4,6 +4,7 @@ mod models;
 mod repositories;
 mod services;
 
+use services::deployment_executor::DeploymentControlState;
 use services::process_runner::BuildProcessState;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -24,6 +25,7 @@ pub fn run() {
             Ok(())
         })
         .manage(BuildProcessState::default())
+        .manage(DeploymentControlState::default())
         .invoke_handler(tauri::generate_handler![
             commands::project::parse_maven_project,
             commands::project::analyze_project_dependencies,
@@ -60,6 +62,7 @@ pub fn run() {
             commands::deployment::delete_deployment_profile,
             commands::deployment::list_deployment_tasks,
             commands::deployment::start_deployment,
+            commands::deployment::cancel_deployment,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

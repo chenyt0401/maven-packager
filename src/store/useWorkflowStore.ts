@@ -3,6 +3,7 @@ import {api} from '../services/tauri-api'
 import type {
     DeploymentLogEvent,
     DeploymentProfile,
+    DeploymentStage,
     DeploymentTask,
     ModuleDependencyGraph,
     SaveServerProfilePayload,
@@ -43,7 +44,8 @@ interface WorkflowState {
   saveDeploymentProfile: (profile: DeploymentProfile) => Promise<void>
   deleteDeploymentProfile: (profileId: string) => Promise<void>
   refreshDeploymentData: () => Promise<void>
-  startDeployment: (profileId: string, artifactPath: string, buildTaskId?: string) => Promise<void>
+  startDeployment: (profileId: string, serverId: string, artifactPath: string, buildTaskId?: string) => Promise<void>
+  cancelDeployment: (taskId: string) => Promise<void>
   appendDeploymentLog: (event: DeploymentLogEvent) => void
   updateDeploymentTask: (task: DeploymentTask) => void
   finishDeploymentTask: (task: DeploymentTask) => void
@@ -67,6 +69,17 @@ const sortProfiles = <T extends {updatedAt?: string; name?: string}>(items: T[])
 
 const sortDeploymentTasks = (tasks: DeploymentTask[]) =>
   [...tasks].sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+
+const createPendingDeploymentStages = (): DeploymentStage[] => [
+  {key: 'upload', label: '上传产物', status: 'pending'},
+  {key: 'stop', label: '停止旧服务', status: 'pending'},
+  {key: 'replace', label: '替换文件', status: 'pending'},
+  {key: 'start', label: '启动服务', status: 'pending'},
+  {key: 'health', label: '健康检查', status: 'pending'},
+]
+
+const isDeploymentTaskRunning = (task?: DeploymentTask) =>
+  Boolean(task && !['success', 'failed', 'cancelled'].includes(task.status))
 
 export const useWorkflowStore = create<WorkflowState>((set, get) => ({
   dependencyLoading: false,
@@ -292,10 +305,16 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
     }
   },
 
-  startDeployment: async (profileId, artifactPath, buildTaskId) => {
+  startDeployment: async (profileId, serverId, artifactPath, buildTaskId) => {
+    if (isDeploymentTaskRunning(get().currentDeploymentTask)) {
+      set({error: '当前已有部署任务在执行，请先停止或等待完成。'})
+      return
+    }
+
     try {
       const taskId = await api.startDeployment({
         deploymentProfileId: profileId,
+        serverId,
         localArtifactPath: artifactPath,
         buildTaskId,
       })
@@ -303,18 +322,35 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
         currentDeploymentTask: {
           id: taskId,
           deploymentProfileId: profileId,
-          serverId: '',
+          serverId,
           moduleId: '',
           artifactPath,
           artifactName: artifactPath.split(/[\\/]/).at(-1) ?? artifactPath,
           status: 'pending',
           log: [],
-          stages: [],
+          stages: createPendingDeploymentStages(),
           createdAt: new Date().toISOString(),
         },
         deploymentLogsByTaskId: {
           ...state.deploymentLogsByTaskId,
           [taskId]: [`${new Date().toLocaleTimeString()} 已提交部署任务`],
+        },
+      }))
+    } catch (error) {
+      set({error: getErrorMessage(error)})
+    }
+  },
+
+  cancelDeployment: async (taskId) => {
+    try {
+      await api.cancelDeployment(taskId)
+      set((state) => ({
+        deploymentLogsByTaskId: {
+          ...state.deploymentLogsByTaskId,
+          [taskId]: [
+            ...(state.deploymentLogsByTaskId[taskId] ?? []),
+            `${new Date().toLocaleTimeString()} 已请求停止部署`,
+          ].slice(-500),
         },
       }))
     } catch (error) {

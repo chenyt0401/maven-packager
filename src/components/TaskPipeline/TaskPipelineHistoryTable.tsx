@@ -1,6 +1,7 @@
-import {Button, Descriptions, Empty, Modal, Space, Table, Tag, Typography} from 'antd'
+import {Button, Descriptions, Empty, Input, Modal, Space, Table, Tag, Typography} from 'antd'
+import {CopyOutlined, FullscreenOutlined} from '@ant-design/icons'
 import type {ColumnsType} from 'antd/es/table'
-import {useMemo, useState} from 'react'
+import {useMemo, useRef, useState} from 'react'
 import {useWorkflowStore} from '../../store/useWorkflowStore'
 import type {TaskPipelineRun} from '../../types/domain'
 
@@ -12,10 +13,25 @@ const statusColor: Record<TaskPipelineRun['status'], string> = {
   failed: 'red',
 }
 
+const classifyLine = (line: string) => {
+  const lower = line.toLowerCase()
+  if (lower.includes('任务链执行完成') || lower.includes('步骤完成')) {
+    return 'success'
+  }
+  if (lower.includes('失败') || lower.includes('[error]')) {
+    return 'error'
+  }
+  return ''
+}
+
 export function TaskPipelineHistoryTable() {
   const taskPipelineRuns = useWorkflowStore((state) => state.taskPipelineRuns)
   const taskPipelineLogsByRunId = useWorkflowStore((state) => state.taskPipelineLogsByRunId)
   const [openRun, setOpenRun] = useState<TaskPipelineRun>()
+  const [logKeyword, setLogKeyword] = useState('')
+  const [logExpanded, setLogExpanded] = useState(false)
+  const logPanelRef = useRef<HTMLDivElement>(null)
+  const logModalPanelRef = useRef<HTMLDivElement>(null)
 
   const columns: ColumnsType<TaskPipelineRun> = useMemo(() => [
     {
@@ -59,12 +75,28 @@ export function TaskPipelineHistoryTable() {
       title: '操作',
       width: 120,
       render: (_, record) => (
-        <Button size="small" onClick={() => setOpenRun(record)}>
+        <Button size="small" onClick={() => { setOpenRun(record); setLogKeyword('') }}>
           详情
         </Button>
       ),
     },
   ], [])
+
+  const openRunLogs = openRun ? (taskPipelineLogsByRunId[openRun.id] ?? openRun.steps.flatMap((s) => s.output)) : []
+  const filteredLogs = logKeyword.trim()
+    ? openRunLogs.filter((line) => line.toLowerCase().includes(logKeyword.trim().toLowerCase()))
+    : openRunLogs
+
+  const renderLogContent = () =>
+    filteredLogs.length === 0 ? (
+      <Text type="secondary">暂无执行日志</Text>
+    ) : (
+      filteredLogs.map((line, index) => (
+        <pre className={`log-line ${classifyLine(line)}`} key={`hlog-${index}`}>
+          {line}
+        </pre>
+      ))
+    )
 
   return (
     <>
@@ -81,7 +113,7 @@ export function TaskPipelineHistoryTable() {
         title={openRun ? `任务链执行详情 · ${openRun.pipelineName}` : '任务链执行详情'}
         open={Boolean(openRun)}
         footer={null}
-        width={860}
+        width={900}
         onCancel={() => setOpenRun(undefined)}
       >
         {openRun ? (
@@ -112,7 +144,7 @@ export function TaskPipelineHistoryTable() {
                   title: '状态',
                   dataIndex: 'status',
                   width: 100,
-                  render: (value: string) => <Tag>{value}</Tag>,
+                  render: (value: string) => <Tag color={stepStatusColor(value)}>{value}</Tag>,
                 },
                 {
                   title: '结果',
@@ -120,12 +152,58 @@ export function TaskPipelineHistoryTable() {
                 },
               ]}
             />
-            <div className="workflow-log-panel">
-              {(taskPipelineLogsByRunId[openRun.id] ?? []).join('\n') || '暂无执行日志'}
+            <Space wrap style={{marginBottom: 8}}>
+              <Input
+                allowClear
+                size="small"
+                placeholder="搜索日志"
+                style={{width: 200}}
+                value={logKeyword}
+                onChange={(event) => setLogKeyword(event.target.value)}
+              />
+              <Button
+                size="small"
+                disabled={openRunLogs.length === 0}
+                icon={<CopyOutlined />}
+                onClick={() => void navigator.clipboard?.writeText(openRunLogs.join('\n'))}
+              >
+                复制日志
+              </Button>
+              <Button
+                size="small"
+                icon={<FullscreenOutlined />}
+                onClick={() => setLogExpanded(true)}
+              >
+                放大查看
+              </Button>
+            </Space>
+            <div className="workflow-log-panel" ref={logPanelRef}>
+              {renderLogContent()}
             </div>
+            <Modal
+              title={`日志 · ${openRun.pipelineName}`}
+              open={logExpanded}
+              footer={null}
+              width="85vw"
+              onCancel={() => setLogExpanded(false)}
+            >
+              <div className="log-panel log-panel-large" ref={logModalPanelRef}>
+                {renderLogContent()}
+              </div>
+            </Modal>
           </Space>
         ) : null}
       </Modal>
     </>
   )
+}
+
+const stepStatusColor = (status: string) => {
+  switch (status) {
+    case 'running': return 'processing'
+    case 'success': return 'success'
+    case 'failed': return 'error'
+    case 'skipped': return 'default'
+    default: return 'default'
+  }
 }

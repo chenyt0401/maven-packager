@@ -206,6 +206,9 @@ export const api = {
   startDeployment: (payload: StartDeploymentPayload) =>
     invoke<string>('start_deployment', { payload }),
 
+  cancelDeployment: (taskId: string) =>
+    invoke<void>('cancel_deployment', { taskId }),
+
   openPathInExplorer: (path: string) =>
     invoke<void>('open_path_in_explorer', { path }),
 

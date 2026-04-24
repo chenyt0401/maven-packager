@@ -11,9 +11,10 @@ use chrono::Utc;
 use encoding_rs::GBK;
 use serde::Deserialize;
 use std::collections::HashMap;
+use std::io::{BufRead, BufReader};
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::thread;
 use std::time::Instant;
 use tauri::{AppHandle, Emitter};
@@ -334,46 +335,106 @@ fn run_command(
     command: &str,
     working_directory: &str,
 ) -> AppResult<(String, Vec<String>)> {
-    let output = Command::new("cmd")
+    let mut child = Command::new("cmd")
         .args(["/C", command])
         .current_dir(working_directory)
         .creation_flags(CREATE_NO_WINDOW)
-        .output()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|error| to_user_error(format!("无法执行命令：{}", error)))?;
 
-    let lines = decode_lines(&output.stdout)
-        .into_iter()
-        .chain(decode_lines(&output.stderr))
-        .collect::<Vec<_>>();
-    for line in &lines {
-        emit_pipeline_log(app, run_id, step_id.clone(), "info", line.clone());
-    }
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let app_stdout = app.clone();
+    let run_id_stdout = run_id.to_string();
+    let step_id_stdout = step_id.clone();
+    let stdout_handle = if let Some(stdout) = stdout {
+        Some(thread::spawn(move || {
+            let mut lines = Vec::new();
+            let mut reader = BufReader::new(stdout);
+            let mut buffer = Vec::new();
+            loop {
+                buffer.clear();
+                match reader.read_until(b'\n', &mut buffer) {
+                    Ok(0) => break,
+                    Ok(_) => {
+                        let line = decode_log_bytes(&buffer);
+                        if !line.trim().is_empty() {
+                            emit_pipeline_log(&app_stdout, &run_id_stdout, step_id_stdout.clone(), "info", &line);
+                            lines.push(line);
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+            lines
+        }))
+    } else {
+        None
+    };
 
-    if !output.status.success() {
-        return Err(to_user_error(if lines.is_empty() {
-            format!("命令执行失败，退出码：{}", output.status)
+    let app_stderr = app.clone();
+    let run_id_stderr = run_id.to_string();
+    let step_id_stderr = step_id.clone();
+    let stderr_handle = if let Some(stderr) = stderr {
+        Some(thread::spawn(move || {
+            let mut lines = Vec::new();
+            let mut reader = BufReader::new(stderr);
+            let mut buffer = Vec::new();
+            loop {
+                buffer.clear();
+                match reader.read_until(b'\n', &mut buffer) {
+                    Ok(0) => break,
+                    Ok(_) => {
+                        let line = decode_log_bytes(&buffer);
+                        if !line.trim().is_empty() {
+                            emit_pipeline_log(&app_stderr, &run_id_stderr, step_id_stderr.clone(), "info", &line);
+                            lines.push(line);
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+            lines
+        }))
+    } else {
+        None
+    };
+
+    let stdout_lines = stdout_handle
+        .map(|handle| handle.join().unwrap_or_default())
+        .unwrap_or_default();
+    let stderr_lines = stderr_handle
+        .map(|handle| handle.join().unwrap_or_default())
+        .unwrap_or_default();
+
+    let exit_status = child.wait().map_err(|error| to_user_error(format!("等待命令结束失败：{}", error)))?;
+    let all_lines: Vec<String> = stdout_lines.into_iter().chain(stderr_lines).collect();
+
+    if !exit_status.success() {
+        return Err(to_user_error(if all_lines.is_empty() {
+            format!("命令执行失败，退出码：{}", exit_status)
         } else {
-            lines.join("\n")
+            all_lines.join("\n")
         }));
     }
 
-    Ok((format!("退出码：{}", output.status), lines))
+    Ok((format!("退出码：{}", exit_status), all_lines))
 }
 
-fn decode_lines(bytes: &[u8]) -> Vec<String> {
-    if bytes.is_empty() {
-        return Vec::new();
+fn decode_log_bytes(bytes: &[u8]) -> String {
+    let mut line = bytes;
+    while line.last().is_some_and(|byte| *byte == b'\n' || *byte == b'\r') {
+        line = &line[..line.len() - 1];
     }
-    let decoded = String::from_utf8(bytes.to_vec()).unwrap_or_else(|_| {
-        let (value, _, _) = GBK.decode(bytes);
-        value.into_owned()
-    });
-    decoded
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .map(ToOwned::to_owned)
-        .collect()
+    match String::from_utf8(line.to_vec()) {
+        Ok(value) => value,
+        Err(_) => {
+            let (decoded, _, _) = GBK.decode(line);
+            decoded.into_owned()
+        }
+    }
 }
 
 fn resolve_module_selection(module_ids: &[String], modules: &[MavenModule]) -> String {

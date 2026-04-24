@@ -35,14 +35,21 @@ pub struct SaveServerProfilePayload {
 pub struct DeploymentProfile {
     pub id: String,
     pub name: String,
-    pub server_id: String,
     pub module_id: String,
     pub local_artifact_pattern: String,
     pub remote_deploy_path: String,
     pub stop_command: Option<String>,
+    #[serde(default)]
+    pub stop_command_enabled: bool,
     pub start_command: Option<String>,
+    #[serde(default)]
+    pub start_command_enabled: bool,
     pub restart_command: Option<String>,
+    #[serde(default)]
+    pub restart_command_enabled: bool,
     pub health_check_url: Option<String>,
+    #[serde(default)]
+    pub health_check_enabled: bool,
     pub created_at: Option<String>,
     pub updated_at: Option<String>,
 }
@@ -83,6 +90,7 @@ pub struct DeploymentTask {
 #[serde(rename_all = "camelCase")]
 pub struct StartDeploymentPayload {
     pub deployment_profile_id: String,
+    pub server_id: String,
     pub local_artifact_path: String,
     pub build_task_id: Option<String>,
 }

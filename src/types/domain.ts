@@ -334,14 +334,17 @@ export interface SaveServerProfilePayload {
 export interface DeploymentProfile {
   id: string
   name: string
-  serverId: string
   moduleId: string
   localArtifactPattern: string
   remoteDeployPath: string
   stopCommand?: string
+  stopCommandEnabled: boolean
   startCommand?: string
+  startCommandEnabled: boolean
   restartCommand?: string
+  restartCommandEnabled: boolean
   healthCheckUrl?: string
+  healthCheckEnabled: boolean
   createdAt?: string
   updatedAt?: string
 }
@@ -349,7 +352,7 @@ export interface DeploymentProfile {
 export interface DeploymentStage {
   key: string
   label: string
-  status: 'pending' | 'running' | 'success' | 'failed' | 'skipped'
+  status: 'pending' | 'running' | 'success' | 'failed' | 'skipped' | 'cancelled'
   startedAt?: string
   finishedAt?: string
   message?: string
@@ -365,7 +368,7 @@ export interface DeploymentTask {
   moduleId: string
   artifactPath: string
   artifactName: string
-  status: 'pending' | 'uploading' | 'stopping' | 'starting' | 'checking' | 'success' | 'failed'
+  status: 'pending' | 'uploading' | 'stopping' | 'starting' | 'checking' | 'success' | 'failed' | 'cancelled'
   log: string[]
   stages: DeploymentStage[]
   createdAt: string
@@ -374,6 +377,7 @@ export interface DeploymentTask {
 
 export interface StartDeploymentPayload {
   deploymentProfileId: string
+  serverId: string
   localArtifactPath: string
   buildTaskId?: string
 }

@@ -2,22 +2,22 @@ import {create} from 'zustand'
 import {api, createDefaultBuildOptions, selectProjectDirectory} from '../services/tauri-api'
 import {diagnoseBuildFailure} from '../services/buildDiagnosisService'
 import type {
-  BuildArtifact,
-  BuildDiagnosis,
-  BuildEnvironment,
-  BuildFinishedEvent,
-  BuildHistoryRecord,
-  BuildLogEvent,
-  BuildOptions,
-  BuildStatus,
-  BuildTemplate,
-  EnvironmentProfile,
-  EnvironmentSettings,
-  GitCommit,
-  GitRepositoryStatus,
-  MavenModule,
-  MavenProject,
-  PersistedBuildStatus,
+    BuildArtifact,
+    BuildDiagnosis,
+    BuildEnvironment,
+    BuildFinishedEvent,
+    BuildHistoryRecord,
+    BuildLogEvent,
+    BuildOptions,
+    BuildStatus,
+    BuildTemplate,
+    EnvironmentProfile,
+    EnvironmentSettings,
+    GitCommit,
+    GitRepositoryStatus,
+    MavenModule,
+    MavenProject,
+    PersistedBuildStatus,
 } from '../types/domain'
 
 interface AppState {
@@ -73,6 +73,7 @@ interface AppState {
   saveEnvironmentProfile: (name: string) => Promise<void>
   deleteEnvironmentProfile: (profileId: string) => Promise<void>
   startBuild: () => Promise<void>
+  startPackageBuild: (moduleIds: string[]) => Promise<void>
   cancelBuild: () => Promise<void>
   appendBuildLog: (event: BuildLogEvent) => void
   clearBuildLogs: () => void
@@ -221,6 +222,17 @@ const notifyBuildFinished = (status: PersistedBuildStatus, durationMs: number, a
   } catch {
     // 用户系统禁止音频时忽略。
   }
+}
+
+const packageProducingGoals = new Set(['package', 'install', 'verify', 'deploy'])
+
+const ensurePackageGoal = (goals: string[]) => {
+  if (goals.some((goal) => packageProducingGoals.has(goal))) {
+    return goals
+  }
+
+  const nextGoals = goals.length > 0 ? [...goals, 'package'] : ['clean', 'package']
+  return Array.from(new Set(nextGoals))
 }
 
 const normalizeProjectPaths = (paths: string[]) =>
@@ -740,6 +752,54 @@ export const useAppStore = create<AppState>((set, get) => ({
         error: message,
         logs: appendSystemLog(state.logs, get().currentBuildId, `构建启动或停止请求失败：${message}`),
       }))
+    }
+  },
+
+  startPackageBuild: async (moduleIds) => {
+    const { project, environment, buildOptions } = get()
+    if (!project || !environment || !buildOptions.projectRoot) {
+      set({ error: '请先选择项目并确认构建环境。' })
+      return
+    }
+
+    const allModules = flattenModules(project.modules)
+    const selectedModules = moduleIds.length > 0
+      ? moduleIds
+          .map((moduleId) => allModules.find((moduleItem) => moduleItem.id === moduleId))
+          .filter((moduleItem): moduleItem is MavenModule => Boolean(moduleItem))
+      : []
+
+    if (moduleIds.length > 0 && selectedModules.length === 0) {
+      set({ error: '部署配置绑定的模块不在当前项目中。' })
+      return
+    }
+
+    const selectedModulePath = selectedModules
+      .map((moduleItem) => moduleItem.relativePath)
+      .join(',')
+    const nextBuildOptions = {
+      ...buildOptions,
+      selectedModulePath,
+      goals: ensurePackageGoal(buildOptions.goals),
+    }
+
+    try {
+      const editableCommand = await api.buildCommandPreview({
+        options: nextBuildOptions,
+        environment,
+      })
+      set({
+        selectedModule: selectedModules[0],
+        selectedModules,
+        selectedModuleIds: selectedModules.map((moduleItem) => moduleItem.id),
+        buildOptions: {
+          ...nextBuildOptions,
+          editableCommand,
+        },
+      })
+      await get().startBuild()
+    } catch (error) {
+      set({ error: getErrorMessage(error) })
     }
   },
 

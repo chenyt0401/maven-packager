@@ -137,3 +137,13 @@ pub fn start_deployment(app: AppHandle, payload: StartDeploymentPayload) -> AppR
     );
     deployment_executor::start_deployment(app, payload)
 }
+
+#[tauri::command]
+pub fn cancel_deployment(app: AppHandle, task_id: String) -> AppResult<()> {
+    app_logger::log_info(
+        &app,
+        "deployment.cancel",
+        format!("task_id={}", task_id),
+    );
+    deployment_executor::cancel_deployment(app, task_id)
+}

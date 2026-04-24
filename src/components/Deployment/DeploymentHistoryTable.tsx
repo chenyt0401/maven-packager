@@ -1,6 +1,7 @@
-import {Button, Descriptions, Empty, Modal, Table, Tag} from 'antd'
+import {Button, Descriptions, Empty, Input, Modal, Space, Table, Tag} from 'antd'
+import {CopyOutlined, FullscreenOutlined} from '@ant-design/icons'
 import type {ColumnsType} from 'antd/es/table'
-import {useMemo, useState} from 'react'
+import {useMemo, useRef, useState} from 'react'
 import {useWorkflowStore} from '../../store/useWorkflowStore'
 import type {DeploymentTask} from '../../types/domain'
 
@@ -12,12 +13,30 @@ const statusColor: Record<DeploymentTask['status'], string> = {
   checking: 'blue',
   success: 'green',
   failed: 'red',
+  cancelled: 'orange',
+}
+
+const classifyLine = (line: string) => {
+  const lower = line.toLowerCase()
+  if (lower.includes('部署完成') || lower.includes('已替换') || lower.includes('健康检查通过')) {
+    return 'success'
+  }
+  if (lower.includes('停止')) {
+    return 'warning'
+  }
+  if (lower.includes('失败') || lower.includes('错误') || lower.includes('error')) {
+    return 'error'
+  }
+  return ''
 }
 
 export function DeploymentHistoryTable() {
   const deploymentTasks = useWorkflowStore((state) => state.deploymentTasks)
   const deploymentLogsByTaskId = useWorkflowStore((state) => state.deploymentLogsByTaskId)
   const [openTask, setOpenTask] = useState<DeploymentTask>()
+  const [logKeyword, setLogKeyword] = useState('')
+  const [logExpanded, setLogExpanded] = useState(false)
+  const logModalPanelRef = useRef<HTMLDivElement>(null)
 
   const columns: ColumnsType<DeploymentTask> = useMemo(() => [
     {
@@ -54,12 +73,28 @@ export function DeploymentHistoryTable() {
       title: '操作',
       width: 100,
       render: (_, record) => (
-        <Button size="small" onClick={() => setOpenTask(record)}>
+        <Button size="small" onClick={() => { setOpenTask(record); setLogKeyword('') }}>
           详情
         </Button>
       ),
     },
   ], [])
+
+  const openTaskLogs = openTask ? (deploymentLogsByTaskId[openTask.id] ?? openTask.log ?? []) : []
+  const filteredLogs = logKeyword.trim()
+    ? openTaskLogs.filter((line) => line.toLowerCase().includes(logKeyword.trim().toLowerCase()))
+    : openTaskLogs
+
+  const renderLogContent = () =>
+    filteredLogs.length === 0 ? (
+      '暂无部署日志'
+    ) : (
+      filteredLogs.map((line, index) => (
+        <pre className={`log-line ${classifyLine(line)}`} key={`dlog-${index}`}>
+          {line}
+        </pre>
+      ))
+    )
 
   return (
     <>
@@ -118,9 +153,45 @@ export function DeploymentHistoryTable() {
                 },
               ]}
             />
-            <div className="workflow-log-panel" style={{marginTop: 16}}>
-              {(deploymentLogsByTaskId[openTask.id] ?? openTask.log ?? []).join('\n') || '暂无部署日志'}
+            <Space wrap style={{marginTop: 16, marginBottom: 8}}>
+              <Input
+                allowClear
+                size="small"
+                placeholder="搜索日志"
+                style={{width: 200}}
+                value={logKeyword}
+                onChange={(event) => setLogKeyword(event.target.value)}
+              />
+              <Button
+                size="small"
+                disabled={openTaskLogs.length === 0}
+                icon={<CopyOutlined />}
+                onClick={() => void navigator.clipboard?.writeText(openTaskLogs.join('\n'))}
+              >
+                复制日志
+              </Button>
+              <Button
+                size="small"
+                icon={<FullscreenOutlined />}
+                onClick={() => setLogExpanded(true)}
+              >
+                放大查看
+              </Button>
+            </Space>
+            <div className="workflow-log-panel">
+              {renderLogContent()}
             </div>
+            <Modal
+              title={`部署日志 · ${openTask.deploymentProfileName ?? openTask.id}`}
+              open={logExpanded}
+              footer={null}
+              width="85vw"
+              onCancel={() => setLogExpanded(false)}
+            >
+              <div className="log-panel log-panel-large" ref={logModalPanelRef}>
+                {renderLogContent()}
+              </div>
+            </Modal>
           </>
         ) : null}
       </Modal>
