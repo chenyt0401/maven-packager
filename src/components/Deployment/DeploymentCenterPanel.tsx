@@ -1159,6 +1159,11 @@ export function DeploymentCenterPanel() {
                           <Text>{currentDeploymentTask.deploymentProfileName ?? currentDeploymentTask.deploymentProfileId}</Text>
                       </Space>
                       <Text type="secondary" className="path-text">{currentDeploymentTask.artifactPath}</Text>
+                      {currentDeploymentTask.log.length > 0 ? (
+                        <div className="deployment-connection-log">
+                          <Text type="secondary">{currentDeploymentTask.log[currentDeploymentTask.log.length - 1]}</Text>
+                        </div>
+                      ) : null}
                       <Steps
                         direction="vertical"
                         size="small"

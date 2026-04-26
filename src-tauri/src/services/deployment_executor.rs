@@ -200,9 +200,9 @@ fn execute_deployment(
         finished_at: None,
     };
 
-    append_log(app, &mut task, None, format!("连接到 {}:{}", server.host, server.port));
+    append_log(app, &mut task, None, format!("正在连接服务器 {}:{} ...", server.host, server.port));
     emit_task_update(app, &task);
-    let conn = match SshConnection::connect(&server) {
+    let mut conn = match SshConnection::connect(&server, || is_cancel_requested(app, task_id)) {
         Ok(conn) => {
             append_log(app, &mut task, None, "SSH 连接建立成功".to_string());
             emit_task_update(app, &task);
@@ -220,7 +220,7 @@ fn execute_deployment(
         }
         task.status = task_status_for_step(&step.step_type).to_string();
         emit_task_update(app, &task);
-        match execute_step_with_retry(app, &conn, &mut task, step, &context, task_id) {
+        match execute_step_with_retry(app, &mut conn, &mut task, step, &context, task_id) {
             Ok(()) => {}
             Err(error) => {
                 let strategy = step.failure_strategy.as_deref().unwrap_or(STRATEGY_STOP);
@@ -264,7 +264,7 @@ fn execute_deployment(
 
 fn execute_step_with_retry(
     app: &AppHandle,
-    conn: &SshConnection,
+    conn: &mut SshConnection,
     task: &mut DeploymentTask,
     step: &DeployStep,
     context: &DeploymentContext,
@@ -329,7 +329,7 @@ fn execute_step_with_retry(
 
 fn execute_single_step(
     app: &AppHandle,
-    conn: &SshConnection,
+    conn: &mut SshConnection,
     task: &mut DeploymentTask,
     step: &DeployStep,
     context: &DeploymentContext,
@@ -348,7 +348,7 @@ fn execute_single_step(
 
 fn execute_ssh_step(
     app: &AppHandle,
-    conn: &SshConnection,
+    conn: &mut SshConnection,
     step: &DeployStep,
     context: &DeploymentContext,
     task_id: &str,
@@ -400,7 +400,7 @@ fn execute_wait_step(
 
 fn execute_port_check_step(
     app: &AppHandle,
-    conn: &SshConnection,
+    conn: &mut SshConnection,
     task: &mut DeploymentTask,
     step: &DeployStep,
     context: &DeploymentContext,
@@ -451,7 +451,7 @@ fn execute_port_check_step(
 
 fn execute_http_check_step(
     app: &AppHandle,
-    conn: &SshConnection,
+    conn: &mut SshConnection,
     task: &mut DeploymentTask,
     step: &DeployStep,
     context: &DeploymentContext,
@@ -519,7 +519,7 @@ fn execute_http_check_step(
 
 fn execute_log_check_step(
     app: &AppHandle,
-    conn: &SshConnection,
+    conn: &mut SshConnection,
     task: &mut DeploymentTask,
     step: &DeployStep,
     context: &DeploymentContext,
@@ -570,7 +570,7 @@ fn execute_log_check_step(
 
 fn execute_upload_step(
     app: &AppHandle,
-    conn: &SshConnection,
+    conn: &mut SshConnection,
     task: &mut DeploymentTask,
     step: &DeployStep,
     context: &DeploymentContext,
@@ -626,7 +626,7 @@ fn execute_upload_step(
 
 fn run_remote_http_check(
     app: &AppHandle,
-    conn: &SshConnection,
+    conn: &mut SshConnection,
     config: &HttpCheckConfig,
     url: &str,
     task_id: &str,

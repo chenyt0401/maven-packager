@@ -1143,6 +1143,15 @@
   overflow: visible;
 }
 
+.deployment-connection-log {
+  padding: 6px 10px;
+  background: #f8fafc;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 .workflow-step-list {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
