@@ -59,6 +59,21 @@ pub struct DeployStep {
     pub config: serde_json::Value,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub backup_dir: Option<String>,
+    #[serde(default = "default_retention_count")]
+    pub retention_count: u32,
+    #[serde(default)]
+    pub auto_rollback: bool,
+    #[serde(default)]
+    pub restart_after_rollback: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DeploymentProfile {
@@ -70,13 +85,31 @@ pub struct DeploymentProfile {
     pub remote_artifact_name: Option<String>,
     pub remote_deploy_path: String,
     #[serde(default)]
+    pub service_description: Option<String>,
+    #[serde(default)]
+    pub service_alias: Option<String>,
+    #[serde(default)]
+    pub java_bin_path: Option<String>,
+    #[serde(default)]
+    pub jvm_options: Option<String>,
+    #[serde(default)]
+    pub spring_profile: Option<String>,
+    #[serde(default)]
+    pub extra_args: Option<String>,
+    #[serde(default)]
+    pub working_dir: Option<String>,
+    #[serde(default)]
     pub log_path: Option<String>,
     #[serde(default = "default_log_naming_mode")]
     pub log_naming_mode: String,
     #[serde(default)]
     pub log_name: Option<String>,
+    #[serde(default = "default_log_encoding")]
+    pub log_encoding: String,
     #[serde(default = "default_true")]
     pub enable_deploy_log: bool,
+    #[serde(default)]
+    pub backup_config: BackupConfig,
     #[serde(default)]
     pub deployment_steps: Vec<DeployStep>,
     #[serde(default)]
@@ -198,6 +231,16 @@ pub struct DeploymentStage {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct RollbackResult {
+    pub executed: bool,
+    pub success: Option<bool>,
+    pub message: Option<String>,
+    pub restored_backup_path: Option<String>,
+    pub restarted_old_version: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DeploymentTask {
     pub id: String,
     pub build_task_id: Option<String>,
@@ -221,6 +264,12 @@ pub struct DeploymentTask {
     pub startup_log_path: Option<String>,
     #[serde(default)]
     pub probe_result: Option<String>,
+    #[serde(default)]
+    pub backup_path: Option<String>,
+    #[serde(default)]
+    pub log_offset_before_start: Option<u64>,
+    #[serde(default)]
+    pub rollback_result: Option<RollbackResult>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -254,6 +303,14 @@ fn default_true() -> bool {
 
 fn default_log_naming_mode() -> String {
     "date".to_string()
+}
+
+fn default_log_encoding() -> String {
+    "UTF-8".to_string()
+}
+
+fn default_retention_count() -> u32 {
+    5
 }
 
 fn default_timeout() -> u64 {

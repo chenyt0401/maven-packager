@@ -1,18 +1,19 @@
 import {
-    Button,
-    Descriptions,
-    Empty,
-    Input,
-    Modal,
-    Popconfirm,
-    Progress,
-    Space,
-    Table,
-    Tag,
-    Tooltip,
-    Typography
+  Button,
+  Descriptions,
+  Empty,
+  Input,
+  Modal,
+  Popconfirm,
+  Progress,
+  Select,
+  Space,
+  Table,
+  Tag,
+  Tooltip,
+  Typography
 } from 'antd'
-import {CopyOutlined, DeleteOutlined, FullscreenOutlined, PlayCircleOutlined} from '@ant-design/icons'
+import {CopyOutlined, DeleteOutlined, DownloadOutlined, FullscreenOutlined, PlayCircleOutlined} from '@ant-design/icons'
 import type {ColumnsType} from 'antd/es/table'
 import {useMemo, useRef, useState} from 'react'
 import {useWorkflowStore} from '../../store/useWorkflowStore'
@@ -153,6 +154,7 @@ export function DeploymentHistoryTable() {
   const [expanded, setExpanded] = useState(false)
   const [openTask, setOpenTask] = useState<DeploymentTask>()
   const [logKeyword, setLogKeyword] = useState('')
+  const [logFilter, setLogFilter] = useState<'all' | 'error' | 'warn' | 'success'>('all')
   const [logExpanded, setLogExpanded] = useState(false)
   const logModalPanelRef = useRef<HTMLDivElement>(null)
 
@@ -238,9 +240,11 @@ export function DeploymentHistoryTable() {
   ], [deleteDeploymentTask, rerunDeployment])
 
   const openTaskLogs = openTask ? (deploymentLogsByTaskId[openTask.id] ?? openTask.log ?? []) : []
-  const filteredLogs = logKeyword.trim()
-    ? openTaskLogs.filter((line) => line.toLowerCase().includes(logKeyword.trim().toLowerCase()))
-    : openTaskLogs
+  const filteredLogs = openTaskLogs.filter((line) => {
+    if (logFilter !== 'all' && classifyLine(line) !== logFilter) return false
+    if (logKeyword.trim() && !line.toLowerCase().includes(logKeyword.trim().toLowerCase())) return false
+    return true
+  })
 
   const renderLogContent = () =>
     filteredLogs.length === 0 ? (
@@ -319,6 +323,23 @@ export function DeploymentHistoryTable() {
                   <Tag color={openTask.status === 'success' ? 'green' : 'red'}>{openTask.probeResult}</Tag>
                 </Descriptions.Item>
               ) : null}
+              {openTask.backupPath ? (
+                <Descriptions.Item label="备份路径" span={2}>
+                  {openTask.backupPath}
+                </Descriptions.Item>
+              ) : null}
+              {openTask.rollbackResult ? (
+                <Descriptions.Item label="回滚结果" span={2}>
+                  <Space>
+                    <Tag color={openTask.rollbackResult.success ? 'green' : 'red'}>
+                      {openTask.rollbackResult.success ? '回滚成功' : '回滚失败'}
+                    </Tag>
+                    {openTask.rollbackResult.message ? <Text type="secondary">{openTask.rollbackResult.message}</Text> : null}
+                    {openTask.rollbackResult.restoredBackupPath ? <Text type="secondary">恢复自: {openTask.rollbackResult.restoredBackupPath}</Text> : null}
+                    {openTask.rollbackResult.restartedOldVersion ? <Tag color="blue">已重启旧版本</Tag> : null}
+                  </Space>
+                </Descriptions.Item>
+              ) : null}
             </Descriptions>
             <Table
               style={{marginTop: 16}}
@@ -375,6 +396,18 @@ export function DeploymentHistoryTable() {
               ]}
             />
             <Space wrap style={{marginTop: 16, marginBottom: 8}}>
+              <Select
+                size="small"
+                value={logFilter}
+                onChange={setLogFilter}
+                style={{ width: 100 }}
+                options={[
+                  { value: 'all', label: '全部' },
+                  { value: 'error', label: '错误' },
+                  { value: 'warn', label: '告警' },
+                  { value: 'success', label: '成功' },
+                ]}
+              />
               <Input
                 allowClear
                 size="small"
@@ -390,6 +423,24 @@ export function DeploymentHistoryTable() {
                 onClick={() => void navigator.clipboard?.writeText(openTaskLogs.join('\n'))}
               >
                 复制日志
+              </Button>
+              <Button
+                size="small"
+                disabled={openTaskLogs.length === 0}
+                icon={<DownloadOutlined />}
+                onClick={() => {
+                  const text = openTaskLogs.join('\n')
+                  if (!text) return
+                  const blob = new Blob([text], { type: 'text/plain;charset=utf-8' })
+                  const url = URL.createObjectURL(blob)
+                  const a = document.createElement('a')
+                  a.href = url
+                  a.download = `deployment-${openTask?.id ?? 'log'}.txt`
+                  a.click()
+                  URL.revokeObjectURL(url)
+                }}
+              >
+                下载日志
               </Button>
               <Button
                 size="small"

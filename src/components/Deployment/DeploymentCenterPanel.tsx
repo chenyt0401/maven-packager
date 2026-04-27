@@ -12,8 +12,10 @@ import {
   Select,
   Space,
   Steps,
+  Table,
   Tabs,
   Tag,
+  Tooltip,
   Typography,
 } from 'antd'
 import {
@@ -22,6 +24,7 @@ import {
   CloudServerOutlined,
   DeleteOutlined,
   DeploymentUnitOutlined,
+  EditOutlined,
   HistoryOutlined,
   InboxOutlined,
   PlayCircleOutlined,
@@ -37,6 +40,7 @@ import {useAppStore} from '../../store/useAppStore'
 import {useNavigationStore} from '../../store/navigationStore'
 import {useWorkflowStore} from '../../store/useWorkflowStore'
 import type {
+  BackupConfig,
   BuildArtifact,
   DeployFailureStrategy,
   DeploymentProfile,
@@ -101,6 +105,14 @@ const createDefaultStartupProbe = (): StartupProbeConfig => ({
   successPolicy: 'health_first',
 })
 
+const createDefaultBackupConfig = (): BackupConfig => ({
+  enabled: true,
+  backupDir: '',
+  retentionCount: 5,
+  autoRollback: false,
+  restartAfterRollback: false,
+})
+
 const createDeploymentDraft = (): DeploymentProfile => ({
   id: crypto.randomUUID(),
   name: '',
@@ -108,10 +120,19 @@ const createDeploymentDraft = (): DeploymentProfile => ({
   localArtifactPattern: '*.jar',
   remoteArtifactName: '',
   remoteDeployPath: '',
+  serviceDescription: '',
+  serviceAlias: '',
+  javaBinPath: '',
+  jvmOptions: '',
+  springProfile: '',
+  extraArgs: '',
+  workingDir: '',
   logPath: '',
   logNamingMode: 'date',
   logName: '',
+  logEncoding: 'UTF-8',
   enableDeployLog: true,
+  backupConfig: createDefaultBackupConfig(),
   deploymentSteps: [],
   customCommands: [],
   startupProbe: createDefaultStartupProbe(),
@@ -779,10 +800,19 @@ export function DeploymentCenterPanel() {
     setDeploymentDraft({
       ...profile,
       remoteArtifactName: profile.remoteArtifactName ?? '',
+      serviceDescription: profile.serviceDescription ?? '',
+      serviceAlias: profile.serviceAlias ?? '',
+      javaBinPath: profile.javaBinPath ?? '',
+      jvmOptions: profile.jvmOptions ?? '',
+      springProfile: profile.springProfile ?? '',
+      extraArgs: profile.extraArgs ?? '',
+      workingDir: profile.workingDir ?? '',
       logPath: profile.logPath ?? '',
       logNamingMode: profile.logNamingMode ?? 'date',
       logName: profile.logName ?? '',
+      logEncoding: profile.logEncoding ?? 'UTF-8',
       enableDeployLog: profile.enableDeployLog ?? true,
+      backupConfig: profile.backupConfig ?? createDefaultBackupConfig(),
       deploymentSteps: profile.deploymentSteps ?? [],
       customCommands: profile.customCommands ?? [],
       startupProbe: profile.startupProbe ?? createDefaultStartupProbe(),
@@ -1325,6 +1355,22 @@ export function DeploymentCenterPanel() {
                     onChange={(event) => setDeploymentDraft((state) => ({...state, name: event.target.value}))}
                   />
                   <Space wrap>
+                    <Input
+                      addonBefore="服务简称"
+                      placeholder="如 r、g、a"
+                      style={{width: 180}}
+                      value={deploymentDraft.serviceAlias ?? ''}
+                      onChange={(event) => setDeploymentDraft((state) => ({...state, serviceAlias: event.target.value || undefined}))}
+                    />
+                    <Input
+                      addonBefore="服务描述"
+                      placeholder="服务用途说明"
+                      style={{minWidth: 300}}
+                      value={deploymentDraft.serviceDescription ?? ''}
+                      onChange={(event) => setDeploymentDraft((state) => ({...state, serviceDescription: event.target.value || undefined}))}
+                    />
+                  </Space>
+                  <Space wrap>
                     <Select
                       placeholder="绑定模块（用于筛选产物）"
                       style={{minWidth: 260}}
@@ -1353,6 +1399,99 @@ export function DeploymentCenterPanel() {
                     value={deploymentDraft.remoteArtifactName ?? ''}
                     onChange={(event) => setDeploymentDraft((state) => ({...state, remoteArtifactName: event.target.value || undefined}))}
                   />
+                  <Card title="Java 运行配置" size="small" className="panel-card">
+                    <Space direction="vertical" size={8} style={{width: '100%'}}>
+                      <Input
+                        addonBefore="Java 路径"
+                        placeholder="如 /home/data/java/jdk1.8.0_144/jre/bin/java，留空使用 java"
+                        value={deploymentDraft.javaBinPath ?? ''}
+                        onChange={(event) => setDeploymentDraft((state) => ({...state, javaBinPath: event.target.value || undefined}))}
+                      />
+                      <Input
+                        addonBefore="JVM 参数"
+                        placeholder="如 -Xms1024m -Xmx1024m"
+                        value={deploymentDraft.jvmOptions ?? ''}
+                        onChange={(event) => setDeploymentDraft((state) => ({...state, jvmOptions: event.target.value || undefined}))}
+                      />
+                      <Space wrap>
+                        <Input
+                          addonBefore="Spring Profile"
+                          placeholder="如 dev、prod"
+                          style={{minWidth: 200}}
+                          value={deploymentDraft.springProfile ?? ''}
+                          onChange={(event) => setDeploymentDraft((state) => ({...state, springProfile: event.target.value || undefined}))}
+                        />
+                        <Input
+                          addonBefore="附加参数"
+                          placeholder="额外启动参数"
+                          style={{minWidth: 260}}
+                          value={deploymentDraft.extraArgs ?? ''}
+                          onChange={(event) => setDeploymentDraft((state) => ({...state, extraArgs: event.target.value || undefined}))}
+                        />
+                      </Space>
+                      <Input
+                        addonBefore="工作目录"
+                        placeholder="留空使用远端目录"
+                        value={deploymentDraft.workingDir ?? ''}
+                        onChange={(event) => setDeploymentDraft((state) => ({...state, workingDir: event.target.value || undefined}))}
+                      />
+                    </Space>
+                  </Card>
+                  <Card title="备份与回滚" size="small" className="panel-card">
+                    <Space direction="vertical" size={8} style={{width: '100%'}}>
+                      <Space wrap>
+                        <Checkbox
+                          checked={deploymentDraft.backupConfig?.enabled ?? true}
+                          onChange={(event) => setDeploymentDraft((state) => ({
+                            ...state,
+                            backupConfig: {...(state.backupConfig ?? createDefaultBackupConfig()), enabled: event.target.checked},
+                          }))}
+                        >
+                          启用备份
+                        </Checkbox>
+                        <Checkbox
+                          checked={deploymentDraft.backupConfig?.autoRollback ?? false}
+                          onChange={(event) => setDeploymentDraft((state) => ({
+                            ...state,
+                            backupConfig: {...(state.backupConfig ?? createDefaultBackupConfig()), autoRollback: event.target.checked},
+                          }))}
+                        >
+                          探针失败自动回滚
+                        </Checkbox>
+                        <Checkbox
+                          checked={deploymentDraft.backupConfig?.restartAfterRollback ?? false}
+                          onChange={(event) => setDeploymentDraft((state) => ({
+                            ...state,
+                            backupConfig: {...(state.backupConfig ?? createDefaultBackupConfig()), restartAfterRollback: event.target.checked},
+                          }))}
+                        >
+                          回滚后重启旧版本
+                        </Checkbox>
+                      </Space>
+                      <Space wrap>
+                        <Input
+                          addonBefore="备份目录"
+                          placeholder="留空使用远端目录"
+                          style={{minWidth: 300}}
+                          value={deploymentDraft.backupConfig?.backupDir ?? ''}
+                          onChange={(event) => setDeploymentDraft((state) => ({
+                            ...state,
+                            backupConfig: {...(state.backupConfig ?? createDefaultBackupConfig()), backupDir: event.target.value || undefined},
+                          }))}
+                        />
+                        <InputNumber
+                          addonBefore="保留数量"
+                          min={1}
+                          max={50}
+                          value={deploymentDraft.backupConfig?.retentionCount ?? 5}
+                          onChange={(value) => setDeploymentDraft((state) => ({
+                            ...state,
+                            backupConfig: {...(state.backupConfig ?? createDefaultBackupConfig()), retentionCount: value ?? 5},
+                          }))}
+                        />
+                      </Space>
+                    </Space>
+                  </Card>
                   <Space wrap>
                     <Input
                       addonBefore="日志路径"
@@ -1379,6 +1518,15 @@ export function DeploymentCenterPanel() {
                         onChange={(event) => setDeploymentDraft((state) => ({...state, logName: event.target.value || undefined}))}
                       />
                     )}
+                    <Select
+                      value={deploymentDraft.logEncoding ?? 'UTF-8'}
+                      style={{width: 120}}
+                      options={[
+                        {label: 'UTF-8', value: 'UTF-8'},
+                        {label: 'GBK', value: 'GBK'},
+                      ]}
+                      onChange={(value) => setDeploymentDraft((state) => ({...state, logEncoding: value}))}
+                    />
                     <Checkbox
                       checked={deploymentDraft.enableDeployLog ?? true}
                       onChange={(event) => setDeploymentDraft((state) => ({...state, enableDeployLog: event.target.checked}))}
@@ -1797,6 +1945,123 @@ export function DeploymentCenterPanel() {
                           </Space>
                         </List.Item>
                       )}
+                    />
+                  )}
+                </Space>
+              ),
+            },
+            {
+              key: 'dictionary',
+              label: '服务字典',
+              children: (
+                <Space direction="vertical" size={16} style={{width: '100%'}}>
+                  <Alert
+                    type="info"
+                    showIcon
+                    message="服务字典"
+                    description="以表格形式统一查看所有服务的简称、名称、模块、Jar、日志路径、PID、端口和健康检查地址，便于快速定位和对比服务配置。"
+                  />
+                  {deploymentProfiles.length === 0 ? (
+                    <Empty description="暂无服务映射，请先在「服务映射」页签中创建" />
+                  ) : (
+                    <Table
+                      rowKey="id"
+                      size="small"
+                      dataSource={deploymentProfiles}
+                      scroll={{x: 1200}}
+                      pagination={false}
+                      columns={[
+                        {
+                          title: '简称',
+                          dataIndex: 'serviceAlias',
+                          width: 60,
+                          render: (value: string) => value ? <Tag color="blue">{value}</Tag> : <Text type="secondary">-</Text>,
+                        },
+                        {
+                          title: '服务名称',
+                          dataIndex: 'name',
+                          width: 140,
+                          ellipsis: true,
+                        },
+                        {
+                          title: '描述',
+                          dataIndex: 'serviceDescription',
+                          width: 120,
+                          ellipsis: true,
+                          render: (value: string) => value || <Text type="secondary">-</Text>,
+                        },
+                        {
+                          title: '模块',
+                          dataIndex: 'moduleId',
+                          width: 120,
+                          ellipsis: true,
+                          render: (value: string) => {
+                            const mod = moduleById.get(value)
+                            return mod ? mod.artifactId : <Text type="secondary">未绑定</Text>
+                          },
+                        },
+                        {
+                          title: 'Jar 名称',
+                          width: 140,
+                          ellipsis: true,
+                          render: (_: unknown, record: DeploymentProfile) => record.remoteArtifactName || record.localArtifactPattern,
+                        },
+                        {
+                          title: '远端目录',
+                          dataIndex: 'remoteDeployPath',
+                          width: 160,
+                          ellipsis: true,
+                        },
+                        {
+                          title: '日志路径',
+                          dataIndex: 'logPath',
+                          width: 180,
+                          ellipsis: true,
+                          render: (value: string) => value || <Text type="secondary">自动</Text>,
+                        },
+                        {
+                          title: 'PID',
+                          width: 80,
+                          render: (_: unknown, record: DeploymentProfile) => {
+                            const baseName = (record.remoteArtifactName || record.localArtifactPattern).replace(/\.[^.]+$/, '')
+                            return <Text code style={{fontSize: 11}}>{baseName}.pid</Text>
+                          },
+                        },
+                        {
+                          title: '端口',
+                          width: 70,
+                          render: (_: unknown, record: DeploymentProfile) => {
+                            const port = record.startupProbe?.portProbe?.enabled ? record.startupProbe.portProbe.port : undefined
+                            return port ? <Tag>{port}</Tag> : <Text type="secondary">-</Text>
+                          },
+                        },
+                        {
+                          title: '健康检查',
+                          width: 120,
+                          ellipsis: true,
+                          render: (_: unknown, record: DeploymentProfile) => {
+                            const url = record.startupProbe?.httpProbe?.enabled ? record.startupProbe.httpProbe.url : undefined
+                            return url ? <Text code style={{fontSize: 11}}>{url}</Text> : <Text type="secondary">-</Text>
+                          },
+                        },
+                        {
+                          title: '操作',
+                          width: 80,
+                          render: (_: unknown, record: DeploymentProfile) => (
+                            <Tooltip title="编辑此映射">
+                              <Button
+                                size="small"
+                                type="text"
+                                icon={<EditOutlined />}
+                                onClick={() => {
+                                  setDeploymentDraft({...record})
+                                  setDeploymentFormMode('edit')
+                                }}
+                              />
+                            </Tooltip>
+                          ),
+                        },
+                      ]}
                     />
                   )}
                 </Space>

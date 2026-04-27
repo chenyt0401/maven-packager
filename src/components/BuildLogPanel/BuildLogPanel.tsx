@@ -1,11 +1,12 @@
 import {
-    CopyOutlined,
-    DeleteOutlined,
-    FullscreenOutlined,
-    PauseCircleOutlined,
-    PlayCircleOutlined
+  CopyOutlined,
+  DeleteOutlined,
+  DownloadOutlined,
+  FullscreenOutlined,
+  PauseCircleOutlined,
+  PlayCircleOutlined
 } from '@ant-design/icons'
-import {Button, Card, Input, List, Modal, Radio, Space, Tag, Tooltip, Typography} from 'antd'
+import {Button, Card, Input, List, Modal, Radio, Select, Space, Tag, Tooltip, Typography} from 'antd'
 import {useEffect, useRef, useState} from 'react'
 import {useAppStore} from '../../store/useAppStore'
 import {useNavigationStore} from '../../store/navigationStore'
@@ -15,6 +16,7 @@ import type {BuildDiagnosis, BuildLogEvent, BuildStatus} from '../../types/domai
 const { Text } = Typography
 
 type LogSource = 'build' | 'deployment'
+type LogFilter = 'all' | 'error' | 'warn' | 'success'
 
 const statusText: Record<BuildStatus, string> = {
   IDLE: '未开始',
@@ -111,6 +113,7 @@ export function BuildLogPanel() {
   const modalPanelRef = useRef<HTMLDivElement>(null)
   const [expanded, setExpanded] = useState(false)
   const [keyword, setKeyword] = useState('')
+  const [logFilter, setLogFilter] = useState<LogFilter>('all')
   const [autoScroll, setAutoScroll] = useState(true)
   const activeSource = useNavigationStore((state) => state.inspectorLogSource)
   const setActiveSource = useNavigationStore((state) => state.setInspectorLogSource)
@@ -168,13 +171,17 @@ export function BuildLogPanel() {
   }, [autoScroll, currentLogCount])
 
   // Filter by keyword
-  const visibleBuildLogs = keyword.trim()
-    ? logs.filter((event) => event.line.toLowerCase().includes(keyword.trim().toLowerCase()))
-    : logs
+  const visibleBuildLogs = logs.filter((event) => {
+    if (logFilter !== 'all' && classifyBuildLog(event) !== logFilter) return false
+    if (keyword.trim() && !event.line.toLowerCase().includes(keyword.trim().toLowerCase())) return false
+    return true
+  })
 
-  const visibleDeploymentLogs = keyword.trim()
-    ? deploymentLogs.filter((line) => line.toLowerCase().includes(keyword.trim().toLowerCase()))
-    : deploymentLogs
+  const visibleDeploymentLogs = deploymentLogs.filter((line) => {
+    if (logFilter !== 'all' && classifyLine(line) !== logFilter) return false
+    if (keyword.trim() && !line.toLowerCase().includes(keyword.trim().toLowerCase())) return false
+    return true
+  })
 
   const renderContent = () => {
     if (activeSource === 'build') {
@@ -214,6 +221,20 @@ export function BuildLogPanel() {
       text = deploymentLogs.join('\n')
     }
     void navigator.clipboard?.writeText(text)
+  }
+
+  const downloadLogs = () => {
+    const text = activeSource === 'build'
+      ? logs.map((event) => event.line).join('\n')
+      : deploymentLogs.join('\n')
+    if (!text) return
+    const blob = new Blob([text], { type: 'text/plain;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = activeSource === 'build' ? 'build-log.txt' : 'deployment-log.txt'
+    a.click()
+    URL.revokeObjectURL(url)
   }
 
   const clearLogs = () => {
@@ -298,6 +319,15 @@ export function BuildLogPanel() {
                 onClick={copyLogs}
               />
             </Tooltip>
+            <Tooltip title="下载日志">
+              <Button
+                size="small"
+                type="text"
+                disabled={currentLogCount === 0}
+                icon={<DownloadOutlined />}
+                onClick={downloadLogs}
+              />
+            </Tooltip>
             <Tooltip title={autoScroll ? '关闭自动滚动' : '开启自动滚动'}>
               <Button
                 size="small"
@@ -327,14 +357,28 @@ export function BuildLogPanel() {
           <Radio.Button value="build">构建</Radio.Button>
           <Radio.Button value="deployment">部署</Radio.Button>
         </Radio.Group>
-        <Input
-          allowClear
-          size="small"
-          className="log-search"
-          placeholder="搜索日志关键词"
-          value={keyword}
-          onChange={(event) => setKeyword(event.target.value)}
-        />
+        <Space size={4}>
+          <Select
+            size="small"
+            value={logFilter}
+            onChange={setLogFilter}
+            style={{ width: 100 }}
+            options={[
+              { value: 'all', label: '全部' },
+              { value: 'error', label: '错误' },
+              { value: 'warn', label: '告警' },
+              { value: 'success', label: '成功' },
+            ]}
+          />
+          <Input
+            allowClear
+            size="small"
+            className="log-search"
+            placeholder="搜索日志关键词"
+            value={keyword}
+            onChange={(event) => setKeyword(event.target.value)}
+          />
+        </Space>
         <div className="log-panel" ref={panelRef}>
           {renderContent()}
         </div>

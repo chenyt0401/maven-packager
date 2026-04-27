@@ -173,6 +173,8 @@ pub struct ProbeContext {
     pub log_path_file: String,
     pub custom_log_path: Option<String>,
     pub enable_deploy_log: bool,
+    pub log_encoding: String,
+    pub log_offset_before_start: Option<u64>,
 }
 
 impl ProbeContext {
@@ -184,6 +186,7 @@ impl ProbeContext {
         enable_deploy_log: bool,
         log_naming_mode: &str,
         log_name: Option<&str>,
+        log_encoding: &str,
     ) -> Self {
         let base_name = remote_artifact_name
             .rsplit_once('.')
@@ -211,6 +214,8 @@ impl ProbeContext {
             log_path_file: format!("{}/{}.log.path", remote_deploy_path, base_name),
             custom_log_path: custom_log_path.map(|s| s.to_string()),
             enable_deploy_log,
+            log_encoding: log_encoding.to_string(),
+            log_offset_before_start: None,
         }
     }
 }
@@ -522,7 +527,19 @@ fn check_log_probe(
         }
     };
 
-    let cmd = format!("tail -n 500 {} 2>/dev/null || true", shell_quote(&log_path));
+    let cmd = if let Some(offset) = context.log_offset_before_start {
+        if offset > 0 {
+            format!(
+                "tail -c +{} {} 2>/dev/null || true",
+                offset + 1,
+                shell_quote(&log_path)
+            )
+        } else {
+            format!("tail -n 500 {} 2>/dev/null || true", shell_quote(&log_path))
+        }
+    } else {
+        format!("tail -n 500 {} 2>/dev/null || true", shell_quote(&log_path))
+    };
     let content = match conn.execute_with_cancel(&cmd, || false) {
         Ok(result) => result.output,
         Err(_) => {

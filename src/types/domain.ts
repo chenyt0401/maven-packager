@@ -444,6 +444,14 @@ export interface ProbeStatusEvent {
 
 export type LogNamingMode = 'date' | 'fixed'
 
+export interface BackupConfig {
+  enabled: boolean
+  backupDir?: string
+  retentionCount: number
+  autoRollback: boolean
+  restartAfterRollback: boolean
+}
+
 export interface DeploymentProfile {
   id: string
   name: string
@@ -451,10 +459,19 @@ export interface DeploymentProfile {
   localArtifactPattern: string
   remoteArtifactName?: string
   remoteDeployPath: string
+  serviceDescription?: string
+  serviceAlias?: string
+  javaBinPath?: string
+  jvmOptions?: string
+  springProfile?: string
+  extraArgs?: string
+  workingDir?: string
   logPath?: string
   logNamingMode: LogNamingMode
   logName?: string
+  logEncoding?: string
   enableDeployLog: boolean
+  backupConfig: BackupConfig
   deploymentSteps: DeployStep[]
   customCommands: DeploymentCustomCommand[]
   startupProbe?: StartupProbeConfig
@@ -477,6 +494,14 @@ export interface DeploymentStage {
   probeStatuses?: ProbeStatus[]
 }
 
+export interface RollbackResult {
+  executed: boolean
+  success?: boolean
+  message?: string
+  restoredBackupPath?: string
+  restartedOldVersion?: boolean
+}
+
 export interface DeploymentTask {
   id: string
   buildTaskId?: string
@@ -495,6 +520,9 @@ export interface DeploymentTask {
   startupPid?: string
   startupLogPath?: string
   probeResult?: string
+  backupPath?: string
+  logOffsetBeforeStart?: number
+  rollbackResult?: RollbackResult
 }
 
 export interface StartDeploymentPayload {

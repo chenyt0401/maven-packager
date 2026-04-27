@@ -1,7 +1,7 @@
 use crate::error::{to_user_error, AppResult};
 use crate::models::deployment::{
-    DeployStep, DeploymentProfile, DeploymentStage, DeploymentTask, ProbeStatus, ProbeStatusEvent,
-    StartDeploymentPayload, StartupProbeConfig,
+    BackupConfig, DeployStep, DeploymentProfile, DeploymentStage, DeploymentTask, ProbeStatus,
+    ProbeStatusEvent, RollbackResult, StartDeploymentPayload, StartupProbeConfig,
 };
 use crate::repositories::deployment_repo;
 use crate::services::ssh_transport_service::SshConnection;
@@ -62,10 +62,19 @@ struct DeploymentContext {
     artifact_name: String,
     remote_artifact_name: String,
     remote_deploy_path: String,
+    service_description: Option<String>,
+    service_alias: Option<String>,
+    java_bin_path: Option<String>,
+    jvm_options: Option<String>,
+    spring_profile: Option<String>,
+    extra_args: Option<String>,
+    working_dir: Option<String>,
     log_path: Option<String>,
     log_naming_mode: String,
     log_name: Option<String>,
+    log_encoding: String,
     enable_deploy_log: bool,
+    backup_config: BackupConfig,
 }
 
 #[derive(Debug, Deserialize)]
@@ -206,10 +215,19 @@ fn execute_deployment(
         artifact_name: artifact_name.clone(),
         remote_artifact_name,
         remote_deploy_path: normalize_remote_dir(&profile.remote_deploy_path),
+        service_description: profile.service_description.clone(),
+        service_alias: profile.service_alias.clone(),
+        java_bin_path: profile.java_bin_path.clone(),
+        jvm_options: profile.jvm_options.clone(),
+        spring_profile: profile.spring_profile.clone(),
+        extra_args: profile.extra_args.clone(),
+        working_dir: profile.working_dir.clone(),
         log_path,
         log_naming_mode,
         log_name,
+        log_encoding: profile.log_encoding.clone(),
         enable_deploy_log: profile.enable_deploy_log,
+        backup_config: profile.backup_config.clone(),
     };
     let steps = normalized_steps(&profile, &context);
     let started = Instant::now();
@@ -231,6 +249,9 @@ fn execute_deployment(
         startup_pid: None,
         startup_log_path: None,
         probe_result: None,
+        backup_path: None,
+        log_offset_before_start: None,
+        rollback_result: None,
     };
 
     append_log(
@@ -252,6 +273,33 @@ fn execute_deployment(
         }
     };
 
+    if context.enable_deploy_log {
+        let log_file_for_offset = context.log_path.as_deref().unwrap_or("");
+        if !log_file_for_offset.is_empty() {
+            let offset_cmd = format!(
+                "if [ -f {} ]; then wc -c < {}; else echo 0; fi",
+                shell_quote(log_file_for_offset),
+                shell_quote(log_file_for_offset),
+            );
+            match conn.execute_with_cancel(&offset_cmd, || is_cancel_requested(app, task_id)) {
+                Ok(result) => {
+                    let offset: u64 = result.output.trim().parse().unwrap_or(0);
+                    task.log_offset_before_start = Some(offset);
+                    append_log(
+                        app,
+                        &mut task,
+                        None,
+                        format!("记录日志偏移量：{} bytes", offset),
+                    );
+                }
+                Err(e) => {
+                    append_log(app, &mut task, None, format!("记录日志偏移量失败：{}", e));
+                }
+            }
+            emit_task_update(app, &task);
+        }
+    }
+
     for step in steps.iter().filter(|step| step.enabled) {
         if finish_if_cancelled(app, &mut task, &step.id) {
             return Ok(task);
@@ -259,7 +307,31 @@ fn execute_deployment(
         task.status = task_status_for_step(&step.step_type).to_string();
         emit_task_update(app, &task);
         match execute_step_with_retry(app, &mut conn, &mut task, step, &context, task_id) {
-            Ok(()) => {}
+            Ok(()) => {
+                if step.id == "legacy-backup" && context.backup_config.enabled {
+                    let backup_dir = context
+                        .backup_config
+                        .backup_dir
+                        .as_deref()
+                        .unwrap_or(&context.remote_deploy_path);
+                    let base_name = context
+                        .remote_artifact_name
+                        .rsplit_once('.')
+                        .map(|(n, _)| n)
+                        .unwrap_or(&context.remote_artifact_name);
+                    let find_latest = format!(
+                        "ls -1t {backup_dir}/{base}.*.bak 2>/dev/null | head -1",
+                        backup_dir = shell_quote(backup_dir),
+                        base = shell_quote(base_name),
+                    );
+                    if let Ok(output) = conn.execute_with_cancel(&find_latest, || false) {
+                        let path = output.output.trim().to_string();
+                        if !path.is_empty() {
+                            task.backup_path = Some(path);
+                        }
+                    }
+                }
+            }
             Err(error) => {
                 let strategy = step.failure_strategy.as_deref().unwrap_or(STRATEGY_STOP);
                 if strategy == STRATEGY_CONTINUE {
@@ -276,9 +348,9 @@ fn execute_deployment(
                         app,
                         &mut task,
                         Some(step.id.clone()),
-                        "步骤失败，回滚策略已触发；当前版本仅停止后续步骤，后续可接入回滚流水线。"
-                            .to_string(),
+                        "步骤失败，回滚策略已触发，开始执行回滚...".to_string(),
                     );
+                    execute_rollback(app, &mut conn, &mut task, &context);
                 }
                 mark_pending_stages_skipped(&mut task, "前序步骤失败，跳过。");
                 task.status = "failed".to_string();
@@ -299,6 +371,15 @@ fn execute_deployment(
                 Err(probe_error) => {
                     task.status = "failed".to_string();
                     append_log(app, &mut task, None, probe_error.clone());
+                    if context.backup_config.auto_rollback {
+                        append_log(
+                            app,
+                            &mut task,
+                            None,
+                            "启动探针失败，自动回滚已触发...".to_string(),
+                        );
+                        execute_rollback(app, &mut conn, &mut task, &context);
+                    }
                 }
             }
         } else {
@@ -452,7 +533,7 @@ fn execute_startup_probe(
     );
     emit_task_update(app, task);
 
-    let probe_context = ProbeContext::new(
+    let mut probe_context = ProbeContext::new(
         &context.remote_deploy_path,
         &context.artifact_name,
         &context.remote_artifact_name,
@@ -460,7 +541,9 @@ fn execute_startup_probe(
         context.enable_deploy_log,
         &context.log_naming_mode,
         context.log_name.as_deref(),
+        &context.log_encoding,
     );
+    probe_context.log_offset_before_start = task.log_offset_before_start;
 
     let shared_probe_statuses: Arc<Mutex<Vec<ProbeStatus>>> = Arc::new(Mutex::new(Vec::new()));
     let shared_logs: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
@@ -986,12 +1069,30 @@ fn legacy_steps_from_custom_commands(
     };
     let log_file = context.log_path.as_deref().unwrap_or(&default_log_file);
     let log_path_file = format!("{}/{}.log.path", context.remote_deploy_path, base_name);
+    let java_bin = context.java_bin_path.as_deref().unwrap_or("java");
+    let jvm_opts = context.jvm_options.as_deref().unwrap_or("");
+    let profile_arg = match &context.spring_profile {
+        Some(p) if !p.trim().is_empty() => format!(" --spring.profiles.active={}", p),
+        _ => String::new(),
+    };
+    let extra = match &context.extra_args {
+        Some(e) if !e.trim().is_empty() => format!(" {}", e),
+        _ => String::new(),
+    };
+    let service_dir = context
+        .working_dir
+        .as_deref()
+        .unwrap_or(&context.remote_deploy_path);
     let start_command = if context.enable_deploy_log {
         format!(
-            "mkdir -p {log_dir} && cd {app_dir} && nohup java -jar {jar_path} > {log_file} 2>&1 & echo $! > {pid_file} && echo {log_file_var} > {log_path_file} && echo PID=$(cat {pid_file}) && echo LOG_FILE=$(cat {log_path_file})",
+            "mkdir -p {log_dir} && cd {app_dir} && nohup {java_bin} {jvm_opts} -jar {jar_path}{profile_arg}{extra} > {log_file} 2>&1 & echo $! > {pid_file} && echo {log_file_var} > {log_path_file} && echo PID=$(cat {pid_file}) && echo LOG_FILE=$(cat {log_path_file})",
             log_dir = shell_quote(&log_dir),
-            app_dir = shell_quote(&context.remote_deploy_path),
+            app_dir = shell_quote(service_dir),
+            java_bin = shell_quote(java_bin),
+            jvm_opts = jvm_opts,
             jar_path = shell_quote(&target_path),
+            profile_arg = profile_arg,
+            extra = extra,
             log_file = shell_quote(log_file),
             pid_file = shell_quote(&pid_file),
             log_file_var = shell_quote(log_file),
@@ -999,16 +1100,59 @@ fn legacy_steps_from_custom_commands(
         )
     } else {
         format!(
-            "cd {app_dir} && nohup java -jar {jar_path} > /dev/null 2>&1 & echo $! > {pid_file} && echo PID=$(cat {pid_file})",
-            app_dir = shell_quote(&context.remote_deploy_path),
+            "cd {app_dir} && nohup {java_bin} {jvm_opts} -jar {jar_path}{profile_arg}{extra} > /dev/null 2>&1 & echo $! > {pid_file} && echo PID=$(cat {pid_file})",
+            app_dir = shell_quote(service_dir),
+            java_bin = shell_quote(java_bin),
+            jvm_opts = jvm_opts,
             jar_path = shell_quote(&target_path),
+            profile_arg = profile_arg,
+            extra = extra,
             pid_file = shell_quote(&pid_file),
         )
     };
     let stop_command = format!(
-        "PID_FILE={pid_file}; if [ -f \"$PID_FILE\" ]; then PID=$(cat \"$PID_FILE\"); if ps -p \"$PID\" > /dev/null 2>&1; then kill \"$PID\"; sleep 3; if ps -p \"$PID\" > /dev/null 2>&1; then kill -9 \"$PID\"; fi; fi; fi",
+        "PID_FILE={pid_file}; if [ -f \"$PID_FILE\" ]; then PID=$(cat \"$PID_FILE\"); if ps -p \"$PID\" > /dev/null 2>&1; then kill \"$PID\"; sleep 3; if ps -p \"$PID\" > /dev/null 2>&1; then kill -9 \"$PID\"; fi; fi; rm -f \"$PID_FILE\"; else pkill -f {artifact} || true; fi",
         pid_file = shell_quote(&pid_file),
+        artifact = shell_quote(&context.remote_artifact_name),
     );
+    let backup_dir = context
+        .backup_config
+        .backup_dir
+        .as_deref()
+        .unwrap_or(&context.remote_deploy_path);
+    let backup_file = format!(
+        "{}/{}.{}.bak",
+        backup_dir,
+        base_name,
+        chrono::Local::now().format("%Y%m%d%H%M%S")
+    );
+    let backup_command = if context.backup_config.enabled {
+        format!(
+            "mkdir -p {backup_dir} && if [ -f {target} ]; then cp -f {target} {backup}; fi",
+            backup_dir = shell_quote(backup_dir),
+            target = shell_quote(&target_path),
+            backup = shell_quote(&backup_file),
+        )
+    } else {
+        format!(
+            "if [ -f {target} ]; then cp -f {target} {target}.${{date}}; fi",
+            target = shell_quote(&target_path),
+        )
+    };
+    let retention = context.backup_config.retention_count.max(1);
+    let retention_plus_one = retention + 1;
+    let cleanup_command = if context.backup_config.enabled {
+        let cleanup_dir = shell_quote(backup_dir);
+        let cleanup_base = shell_quote(base_name);
+        format!(
+            "ls -1t {cleanup_dir}/{cleanup_base}.*.bak 2>/dev/null | tail -n +{retention_plus_one} | xargs -r rm -f",
+            cleanup_dir = cleanup_dir,
+            cleanup_base = cleanup_base,
+            retention_plus_one = retention_plus_one,
+        )
+    } else {
+        String::new()
+    };
     let mut steps = vec![
         create_upload_step(
             "legacy-upload",
@@ -1017,15 +1161,7 @@ fn legacy_steps_from_custom_commands(
             "${artifactPath}",
             &temp_path,
         ),
-        create_ssh_step(
-            "legacy-backup",
-            "备份旧版本",
-            15,
-            &format!(
-                "if [ -f {target} ]; then cp -f {target} {target}.${{date}}; fi",
-                target = shell_quote(&target_path),
-            ),
-        ),
+        create_ssh_step("legacy-backup", "备份旧版本", 15, &backup_command),
         create_ssh_step("legacy-stop", "停止旧服务", 20, &stop_command),
         create_wait_step("legacy-wait", "等待端口释放", 25, 3),
         create_ssh_step(
@@ -1040,6 +1176,14 @@ fn legacy_steps_from_custom_commands(
         ),
         create_ssh_step("legacy-start", "启动新服务", 40, &start_command),
     ];
+    if context.backup_config.enabled && !cleanup_command.is_empty() {
+        steps.push(create_ssh_step(
+            "legacy-cleanup-backups",
+            "清理旧备份",
+            16,
+            &cleanup_command,
+        ));
+    }
     let mut order = 50;
     for command in &profile.custom_commands {
         if !command.enabled || command.command.trim().is_empty() {
@@ -1218,6 +1362,9 @@ fn create_failed_start_task(
         startup_pid: None,
         startup_log_path: None,
         probe_result: None,
+        backup_path: None,
+        log_offset_before_start: None,
+        rollback_result: None,
     }
 }
 
@@ -1264,6 +1411,141 @@ fn mark_pending_stages_skipped(task: &mut DeploymentTask, message: &str) {
             stage.finished_at = Some(Utc::now().to_rfc3339());
         }
     }
+}
+
+fn execute_rollback(
+    app: &AppHandle,
+    conn: &mut SshConnection,
+    task: &mut DeploymentTask,
+    context: &DeploymentContext,
+) {
+    let base_name = context
+        .remote_artifact_name
+        .rsplit_once('.')
+        .map(|(n, _)| n)
+        .unwrap_or(&context.remote_artifact_name);
+    let target_path = format!(
+        "{}/{}",
+        context.remote_deploy_path, context.remote_artifact_name
+    );
+    let pid_file = format!("{}/{}.pid", context.remote_deploy_path, base_name);
+
+    let mut rollback = RollbackResult {
+        executed: true,
+        success: Some(false),
+        message: None,
+        restored_backup_path: None,
+        restarted_old_version: Some(false),
+    };
+
+    append_log(app, task, None, "=== 开始回滚 ===".to_string());
+
+    let stop_cmd = format!(
+        "PID_FILE={pid_file}; if [ -f \"$PID_FILE\" ]; then PID=$(cat \"$PID_FILE\"); if ps -p \"$PID\" > /dev/null 2>&1; then kill \"$PID\"; sleep 3; if ps -p \"$PID\" > /dev/null 2>&1; then kill -9 \"$PID\"; fi; fi; rm -f \"$PID_FILE\"; else pkill -f {artifact} || true; fi",
+        pid_file = shell_quote(&pid_file),
+        artifact = shell_quote(&context.remote_artifact_name),
+    );
+    match conn.execute_with_cancel(&stop_cmd, || false) {
+        Ok(_) => append_log(app, task, None, "回滚：已停止新版本服务".to_string()),
+        Err(e) => append_log(app, task, None, format!("回滚：停止新版本服务失败：{}", e)),
+    }
+
+    let backup_dir = context
+        .backup_config
+        .backup_dir
+        .as_deref()
+        .unwrap_or(&context.remote_deploy_path);
+    let find_backup_cmd = format!(
+        "ls -1t {backup_dir}/{base}.*.bak 2>/dev/null | head -1",
+        backup_dir = shell_quote(backup_dir),
+        base = shell_quote(base_name),
+    );
+    let backup_file = match conn.execute_with_cancel(&find_backup_cmd, || false) {
+        Ok(result) => result.output.trim().to_string(),
+        Err(_) => String::new(),
+    };
+
+    if !backup_file.is_empty() {
+        let restore_cmd = format!(
+            "cp -f {backup} {target}",
+            backup = shell_quote(&backup_file),
+            target = shell_quote(&target_path),
+        );
+        match conn.execute_with_cancel(&restore_cmd, || false) {
+            Ok(_) => {
+                append_log(
+                    app,
+                    task,
+                    None,
+                    format!("回滚：已从备份 {} 恢复旧版本", backup_file),
+                );
+                rollback.restored_backup_path = Some(backup_file.clone());
+                rollback.success = Some(true);
+            }
+            Err(e) => {
+                append_log(app, task, None, format!("回滚：恢复备份失败：{}", e));
+                rollback.message = Some(format!("恢复备份失败：{}", e));
+            }
+        }
+    } else {
+        append_log(
+            app,
+            task,
+            None,
+            "回滚：未找到备份文件，无法恢复旧版本".to_string(),
+        );
+        rollback.message = Some("未找到备份文件".to_string());
+    }
+
+    if context.backup_config.restart_after_rollback && rollback.success == Some(true) {
+        let log_dir = format!("{}/logs", context.remote_deploy_path);
+        let log_file = format!(
+            "{}/{}-rollback-$(date +%Y%m%d%H%M%S).log",
+            log_dir, base_name
+        );
+        let log_path_file = format!("{}/{}.log.path", context.remote_deploy_path, base_name);
+        let java_bin = context.java_bin_path.as_deref().unwrap_or("java");
+        let jvm_opts = context.jvm_options.as_deref().unwrap_or("");
+        let profile_arg = match &context.spring_profile {
+            Some(p) if !p.trim().is_empty() => format!(" --spring.profiles.active={}", p),
+            _ => String::new(),
+        };
+        let extra = match &context.extra_args {
+            Some(e) if !e.trim().is_empty() => format!(" {}", e),
+            _ => String::new(),
+        };
+        let service_dir = context
+            .working_dir
+            .as_deref()
+            .unwrap_or(&context.remote_deploy_path);
+        let restart_cmd = format!(
+            "cd {app_dir} && nohup {java_bin} {jvm_opts} -jar {jar_path}{profile_arg}{extra} > {log_file} 2>&1 & echo $! > {pid_file} && echo {log_file_var} > {log_path_file}",
+            app_dir = shell_quote(service_dir),
+            java_bin = shell_quote(java_bin),
+            jvm_opts = jvm_opts,
+            jar_path = shell_quote(&target_path),
+            profile_arg = profile_arg,
+            extra = extra,
+            log_file = shell_quote(&log_file),
+            pid_file = shell_quote(&pid_file),
+            log_file_var = shell_quote(&log_file),
+            log_path_file = shell_quote(&log_path_file),
+        );
+        match conn.execute_with_cancel(&restart_cmd, || false) {
+            Ok(_) => {
+                append_log(app, task, None, "回滚：已重新启动旧版本服务".to_string());
+                rollback.restarted_old_version = Some(true);
+            }
+            Err(e) => {
+                append_log(app, task, None, format!("回滚：重启旧版本失败：{}", e));
+                rollback.restarted_old_version = Some(false);
+            }
+        }
+    }
+
+    append_log(app, task, None, "=== 回滚结束 ===".to_string());
+    task.rollback_result = Some(rollback);
+    emit_task_update(app, task);
 }
 
 fn update_stage(task: &mut DeploymentTask, stage_key: &str, status: &str, message: Option<String>) {
@@ -1354,6 +1636,23 @@ fn expand_tokens(value: &str, context: &DeploymentContext) -> String {
             timestamp
         ),
     };
+    let java_bin = context.java_bin_path.as_deref().unwrap_or("java");
+    let jvm_opts = context.jvm_options.as_deref().unwrap_or("");
+    let profile_arg = match &context.spring_profile {
+        Some(p) if !p.trim().is_empty() => format!("--spring.profiles.active={}", p),
+        _ => String::new(),
+    };
+    let extra = context.extra_args.as_deref().unwrap_or("");
+    let service_dir = context
+        .working_dir
+        .as_deref()
+        .unwrap_or(&context.remote_deploy_path);
+    let base_name = context
+        .remote_artifact_name
+        .rsplit_once('.')
+        .map(|(n, _)| n)
+        .unwrap_or(&context.remote_artifact_name);
+    let pid_file = format!("{}/{}.pid", context.remote_deploy_path, base_name);
     value
         .replace("${artifactPath}", &context.artifact_path)
         .replace("${artifactName}", &context.artifact_name)
@@ -1362,6 +1661,12 @@ fn expand_tokens(value: &str, context: &DeploymentContext) -> String {
         .replace("${date}", &today)
         .replace("${timestamp}", &timestamp)
         .replace("${logName}", &log_name_resolved)
+        .replace("${javaBin}", java_bin)
+        .replace("${jvmOptions}", jvm_opts)
+        .replace("${springProfile}", &profile_arg)
+        .replace("${extraArgs}", extra)
+        .replace("${serviceDir}", service_dir)
+        .replace("${pidFile}", &pid_file)
 }
 
 fn normalize_remote_dir(value: &str) -> String {
