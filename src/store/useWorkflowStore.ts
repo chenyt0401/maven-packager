@@ -1,14 +1,15 @@
 import {create} from 'zustand'
 import {api} from '../services/tauri-api'
 import type {
-    DeploymentLogEvent,
-    DeploymentProfile,
-    DeploymentStage,
-    DeploymentTask,
-    DeployStepType,
-    ModuleDependencyGraph,
-    SaveServerProfilePayload,
-    ServerProfile,
+  DeploymentLogEvent,
+  DeploymentProfile,
+  DeploymentStage,
+  DeploymentTask,
+  DeployStepType,
+  ModuleDependencyGraph,
+  ProbeStatusEvent,
+  SaveServerProfilePayload,
+  ServerProfile,
 } from '../types/domain'
 
 interface WorkflowState {
@@ -37,6 +38,7 @@ interface WorkflowState {
   finishDeploymentTask: (task: DeploymentTask) => void
   deleteDeploymentTask: (taskId: string) => Promise<void>
   rerunDeployment: (task: DeploymentTask) => Promise<void>
+  updateProbeStatuses: (event: ProbeStatusEvent) => void
 }
 
 const getErrorMessage = (error: unknown) =>
@@ -283,5 +285,22 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
       task.artifactPath,
       task.buildTaskId,
     )
+  },
+
+  updateProbeStatuses: (event) => {
+    set((state) => {
+      const task = state.currentDeploymentTask
+      if (!task || task.id !== event.taskId) {
+        return {}
+      }
+      const updatedStages = task.stages.map((stage) =>
+        stage.key === event.stageKey
+          ? {...stage, probeStatuses: event.probeStatuses}
+          : stage,
+      )
+      return {
+        currentDeploymentTask: {...task, stages: updatedStages},
+      }
+    })
   },
 }))

@@ -1,9 +1,11 @@
 use crate::error::{to_user_error, AppResult};
 use crate::models::deployment::{
-    DeployStep, DeploymentProfile, DeploymentStage, DeploymentTask, StartDeploymentPayload,
+    DeployStep, DeploymentProfile, DeploymentStage, DeploymentTask, ProbeStatus, ProbeStatusEvent,
+    StartDeploymentPayload, StartupProbeConfig,
 };
 use crate::repositories::deployment_repo;
 use crate::services::ssh_transport_service::SshConnection;
+use crate::services::startup_probe_service::{self, ProbeContext};
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use serde_json::json;
@@ -198,6 +200,9 @@ fn execute_deployment(
         stages: steps.iter().map(create_stage_from_step).collect(),
         created_at: Utc::now().to_rfc3339(),
         finished_at: None,
+        startup_pid: None,
+        startup_log_path: None,
+        probe_result: None,
     };
 
     append_log(app, &mut task, None, format!("正在连接服务器 {}:{} ...", server.host, server.port));
@@ -250,7 +255,36 @@ fn execute_deployment(
         }
     }
 
-    task.status = "success".to_string();
+    if let Some(probe_config) = &profile.startup_probe {
+        if probe_config.enabled {
+            match execute_startup_probe(app, &mut conn, &mut task, probe_config, &context, task_id) {
+                Ok(()) => {
+                    task.status = "success".to_string();
+                }
+                Err(probe_error) => {
+                    task.status = "failed".to_string();
+                    append_log(app, &mut task, None, probe_error.clone());
+                }
+            }
+        } else {
+            task.status = "success".to_string();
+            append_log(
+                app,
+                &mut task,
+                None,
+                "启动探针已禁用，部署流水线完成但未验证服务是否真正启动成功。".to_string(),
+            );
+        }
+    } else {
+        task.status = "success".to_string();
+        append_log(
+            app,
+            &mut task,
+            None,
+            "未配置启动探针，无法确认服务是否真正启动成功。建议在服务映射中配置启动探针。".to_string(),
+        );
+    }
+
     task.finished_at = Some(Utc::now().to_rfc3339());
     append_log(
         app,
@@ -325,6 +359,157 @@ fn execute_step_with_retry(
     append_log(app, task, Some(step.id.clone()), format!("步骤失败：{}", error));
     emit_task_update(app, task);
     Err(to_user_error(error))
+}
+
+fn execute_startup_probe(
+    app: &AppHandle,
+    conn: &mut SshConnection,
+    task: &mut DeploymentTask,
+    config: &StartupProbeConfig,
+    context: &DeploymentContext,
+    task_id: &str,
+) -> Result<(), String> {
+    let probe_stage_key = "startup-probe";
+    let probe_stage = DeploymentStage {
+        key: probe_stage_key.to_string(),
+        label: "启动探针检测".to_string(),
+        step_type: Some("startup_probe".to_string()),
+        status: "checking".to_string(),
+        started_at: Some(Utc::now().to_rfc3339()),
+        finished_at: None,
+        message: Some("启动探针检测中...".to_string()),
+        retry_count: None,
+        current_retry: None,
+        duration_ms: None,
+        logs: Vec::new(),
+        probe_statuses: Vec::new(),
+    };
+    task.stages.push(probe_stage);
+    task.status = "checking".to_string();
+    emit_task_update(app, task);
+
+    append_log(
+        app,
+        task,
+        Some(probe_stage_key.to_string()),
+        format!(
+            "进入启动探针检测阶段，超时 {} 秒，检测间隔 {} 秒",
+            config.timeout_seconds, config.interval_seconds
+        ),
+    );
+    emit_task_update(app, task);
+
+    let probe_context = ProbeContext::new(&context.remote_deploy_path, &context.artifact_name);
+
+    let shared_probe_statuses: Arc<Mutex<Vec<ProbeStatus>>> = Arc::new(Mutex::new(Vec::new()));
+    let shared_logs: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+
+    let app_clone = app.clone();
+    let task_id_owned = task_id.to_string();
+    let probe_stage_key_owned = probe_stage_key.to_string();
+    let statuses_ref = shared_probe_statuses.clone();
+    let logs_ref = shared_logs.clone();
+
+    let result = startup_probe_service::run_startup_probe(
+        conn,
+        config,
+        &probe_context,
+        &|| is_cancel_requested(app, task_id),
+        &move |statuses: &[ProbeStatus]| {
+            if let Ok(mut guard) = statuses_ref.lock() {
+                *guard = statuses.to_vec();
+            }
+            let _ = app_clone.emit(
+                "probe-status",
+                ProbeStatusEvent {
+                    task_id: task_id_owned.clone(),
+                    stage_key: probe_stage_key_owned.clone(),
+                    probe_statuses: statuses.to_vec(),
+                },
+            );
+        },
+        &move |line: &str| {
+            if let Ok(mut guard) = logs_ref.lock() {
+                guard.push(line.to_string());
+            }
+        },
+    );
+
+    {
+        let guard = shared_logs.lock().unwrap();
+        for log_line in guard.iter() {
+            task.log.push(log_line.clone());
+            if let Some(stage) = task.stages.iter_mut().find(|s| s.key == probe_stage_key) {
+                stage.logs.push(log_line.clone());
+            }
+            let _ = app.emit(
+                "deployment-log",
+                crate::models::deployment::DeploymentLogEvent {
+                    task_id: task.id.clone(),
+                    stage_key: Some(probe_stage_key.to_string()),
+                    line: log_line.clone(),
+                },
+            );
+        }
+    }
+
+    {
+        let guard = shared_probe_statuses.lock().unwrap();
+        if let Some(stage) = task.stages.iter_mut().find(|s| s.key == probe_stage_key) {
+            stage.probe_statuses = guard.clone();
+        }
+    }
+    emit_task_update(app, task);
+
+    match result {
+        Ok(probe_result) => {
+            task.startup_pid = probe_result.pid;
+            task.startup_log_path = probe_result.log_path.clone();
+            task.probe_result = Some(probe_result.reason.clone());
+
+            if let Some(stage) = task.stages.iter_mut().find(|s| s.key == probe_stage_key) {
+                stage.probe_statuses = probe_result.probe_statuses.clone();
+                if probe_result.success {
+                    stage.status = "success".to_string();
+                    stage.message = Some(probe_result.reason.clone());
+                    append_log(
+                        app,
+                        task,
+                        Some(probe_stage_key.to_string()),
+                        format!("启动探针检测通过：{}", probe_result.reason),
+                    );
+                } else {
+                    stage.status = "failed".to_string();
+                    stage.message = Some(probe_result.reason.clone());
+                    append_log(
+                        app,
+                        task,
+                        Some(probe_stage_key.to_string()),
+                        format!("启动探针检测失败：{}", probe_result.reason),
+                    );
+                }
+            }
+
+            if probe_result.success {
+                Ok(())
+            } else {
+                Err(probe_result.reason)
+            }
+        }
+        Err(error) => {
+            if let Some(stage) = task.stages.iter_mut().find(|s| s.key == probe_stage_key) {
+                stage.status = "failed".to_string();
+                stage.message = Some(error.clone());
+            }
+            append_log(
+                app,
+                task,
+                Some(probe_stage_key.to_string()),
+                format!("启动探针检测异常：{}", error),
+            );
+            Err(error)
+        }
+    }
 }
 
 fn execute_single_step(
@@ -686,21 +871,41 @@ fn legacy_steps_from_custom_commands(
         context.remote_deploy_path, context.artifact_name
     );
     let target_path = format!("{}/{}", context.remote_deploy_path, context.artifact_name);
+    let base_name = context.artifact_name.rsplit_once('.').map(|(n, _)| n).unwrap_or(&context.artifact_name);
+    let pid_file = format!("{}/{}.pid", context.remote_deploy_path, base_name);
+    let log_dir = format!("{}/logs", context.remote_deploy_path);
+    let log_file = format!("{}/{}-$(date +%Y%m%d%H%M%S).log", log_dir, base_name);
+    let log_path_file = format!("{}/{}.log.path", context.remote_deploy_path, base_name);
+    let start_command = format!(
+        "mkdir -p {log_dir} && cd {app_dir} && nohup java -jar {jar_path} > {log_file} 2>&1 & echo $! > {pid_file} && echo {log_file_var} > {log_path_file} && echo PID=$(cat {pid_file}) && echo LOG_FILE=$(cat {log_path_file})",
+        log_dir = shell_quote(&log_dir),
+        app_dir = shell_quote(&context.remote_deploy_path),
+        jar_path = shell_quote(&target_path),
+        log_file = shell_quote(&log_file),
+        pid_file = shell_quote(&pid_file),
+        log_file_var = shell_quote(&log_file),
+        log_path_file = shell_quote(&log_path_file),
+    );
+    let stop_command = format!(
+        "PID_FILE={pid_file}; if [ -f \"$PID_FILE\" ]; then PID=$(cat \"$PID_FILE\"); if ps -p \"$PID\" > /dev/null 2>&1; then kill \"$PID\"; sleep 3; if ps -p \"$PID\" > /dev/null 2>&1; then kill -9 \"$PID\"; fi; fi; fi",
+        pid_file = shell_quote(&pid_file),
+    );
     let mut steps = vec![
         create_upload_step("legacy-upload", "上传产物", 10, "${artifactPath}", &temp_path),
-        create_ssh_step(
-            "legacy-replace",
-            "替换文件",
-            40,
-            &format!(
-                "mkdir -p {dir} && mv -f {temp} {target}",
-                dir = shell_quote(&context.remote_deploy_path),
-                temp = shell_quote(&temp_path),
-                target = shell_quote(&target_path),
-            ),
-        ),
+        create_ssh_step("legacy-backup", "备份旧版本", 15, &format!(
+            "if [ -f {target} ]; then cp -f {target} {target}.${{date}}; fi",
+            target = shell_quote(&target_path),
+        )),
+        create_ssh_step("legacy-stop", "停止旧服务", 20, &stop_command),
+        create_wait_step("legacy-wait", "等待端口释放", 25, 3),
+        create_ssh_step("legacy-replace", "替换文件", 30, &format!(
+            "mv -f {temp} {target}",
+            temp = shell_quote(&temp_path),
+            target = shell_quote(&target_path),
+        )),
+        create_ssh_step("legacy-start", "启动新服务", 40, &start_command),
     ];
-    let mut order = 20;
+    let mut order = 50;
     for command in &profile.custom_commands {
         if !command.enabled || command.command.trim().is_empty() {
             continue;
@@ -758,6 +963,23 @@ fn create_ssh_step(id: &str, name: &str, order: i32, command: &str) -> DeploySte
     }
 }
 
+fn create_wait_step(id: &str, name: &str, order: i32, wait_seconds: u64) -> DeployStep {
+    DeployStep {
+        id: id.to_string(),
+        enabled: true,
+        name: name.to_string(),
+        step_type: TYPE_WAIT.to_string(),
+        order,
+        timeout_seconds: None,
+        retry_count: Some(0),
+        retry_interval_seconds: Some(3),
+        failure_strategy: Some(STRATEGY_STOP.to_string()),
+        config: json!({
+            "waitSeconds": wait_seconds,
+        }),
+    }
+}
+
 fn create_http_step(id: &str, name: &str, order: i32, url: &str) -> DeployStep {
     DeployStep {
         id: id.to_string(),
@@ -792,6 +1014,7 @@ fn create_stage_from_step(step: &DeployStep) -> DeploymentStage {
         current_retry: Some(0),
         duration_ms: None,
         logs: Vec::new(),
+        probe_statuses: Vec::new(),
     }
 }
 
@@ -830,9 +1053,13 @@ fn create_failed_start_task(
             current_retry: Some(0),
             duration_ms: Some(0),
             logs: Vec::new(),
+            probe_statuses: Vec::new(),
         }],
         created_at: now.clone(),
         finished_at: Some(now),
+        startup_pid: None,
+        startup_log_path: None,
+        probe_result: None,
     }
 }
 
@@ -964,6 +1191,7 @@ fn task_status_for_step(step_type: &str) -> &'static str {
         TYPE_UPLOAD_FILE => "uploading",
         TYPE_PORT_CHECK | TYPE_HTTP_CHECK | TYPE_LOG_CHECK => "checking",
         TYPE_WAIT => "checking",
+        "startup_probe" => "checking",
         _ => "starting",
     }
 }
@@ -972,6 +1200,7 @@ fn running_status_for_step(step_type: &str) -> &'static str {
     match step_type {
         TYPE_WAIT => "waiting",
         TYPE_PORT_CHECK | TYPE_HTTP_CHECK | TYPE_LOG_CHECK => "checking",
+        "startup_probe" => "checking",
         _ => "running",
     }
 }
@@ -983,6 +1212,7 @@ fn stage_running_message(step: &DeployStep) -> String {
         TYPE_HTTP_CHECK => "HTTP 健康检查中".to_string(),
         TYPE_LOG_CHECK => "日志关键字检测中".to_string(),
         TYPE_UPLOAD_FILE => "文件上传中".to_string(),
+        "startup_probe" => "启动探针检测中".to_string(),
         _ => "执行中".to_string(),
     }
 }

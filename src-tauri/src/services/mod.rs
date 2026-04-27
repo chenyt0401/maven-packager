@@ -8,3 +8,4 @@ pub mod pom_parser;
 pub mod process_runner;
 pub mod secure_storage;
 pub mod ssh_transport_service;
+pub mod startup_probe_service;

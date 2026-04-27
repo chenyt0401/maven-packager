@@ -17,6 +17,7 @@ function App() {
   const appendDeploymentLog = useWorkflowStore((state) => state.appendDeploymentLog)
   const updateDeploymentTask = useWorkflowStore((state) => state.updateDeploymentTask)
   const finishDeploymentTask = useWorkflowStore((state) => state.finishDeploymentTask)
+  const updateProbeStatuses = useWorkflowStore((state) => state.updateProbeStatuses)
 
   useEffect(() => {
     initialize()
@@ -37,6 +38,7 @@ function App() {
       appendDeploymentLog,
       updateDeploymentTask,
       finishDeploymentTask,
+      updateProbeStatuses,
     ).then((unlisten) => {
       if (disposed) {
         unlisten()
@@ -58,6 +60,7 @@ function App() {
     initialize,
     initializeWorkflow,
     updateDeploymentTask,
+    updateProbeStatuses,
   ])
 
   useEffect(() => {

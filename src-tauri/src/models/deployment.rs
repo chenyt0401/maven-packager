@@ -71,8 +71,99 @@ pub struct DeploymentProfile {
     pub deployment_steps: Vec<DeployStep>,
     #[serde(default)]
     pub custom_commands: Vec<DeploymentCustomCommand>,
+    #[serde(default)]
+    pub startup_probe: Option<StartupProbeConfig>,
     pub created_at: Option<String>,
     pub updated_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StartupProbeConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_timeout")]
+    pub timeout_seconds: u64,
+    #[serde(default = "default_interval")]
+    pub interval_seconds: u64,
+    #[serde(default)]
+    pub process_probe: Option<ProcessProbeConfig>,
+    #[serde(default)]
+    pub port_probe: Option<PortProbeConfig>,
+    #[serde(default)]
+    pub http_probe: Option<HttpProbeConfig>,
+    #[serde(default)]
+    pub log_probe: Option<LogProbeConfig>,
+    #[serde(default = "default_success_policy")]
+    pub success_policy: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProcessProbeConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub pid_file: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PortProbeConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_probe_host")]
+    pub host: String,
+    #[serde(default = "default_probe_port")]
+    pub port: u16,
+    #[serde(default = "default_consecutive_successes")]
+    pub consecutive_successes: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HttpProbeConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default = "default_http_method")]
+    pub method: String,
+    #[serde(default)]
+    pub expected_status_codes: Option<Vec<u16>>,
+    #[serde(default)]
+    pub expected_body_contains: Option<String>,
+    #[serde(default = "default_consecutive_successes")]
+    pub consecutive_successes: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LogProbeConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub log_path: Option<String>,
+    #[serde(default = "default_success_keywords")]
+    pub success_patterns: Vec<String>,
+    #[serde(default = "default_failure_keywords")]
+    pub failure_patterns: Vec<String>,
+    #[serde(default = "default_warning_keywords")]
+    pub warning_patterns: Vec<String>,
+    #[serde(default)]
+    pub use_regex: bool,
+    #[serde(default = "default_true")]
+    pub only_current_deploy_log: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProbeStatus {
+    pub probe_type: String,
+    pub status: String,
+    pub message: Option<String>,
+    pub check_count: Option<u32>,
+    pub last_check_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -91,6 +182,8 @@ pub struct DeploymentStage {
     pub duration_ms: Option<u128>,
     #[serde(default)]
     pub logs: Vec<String>,
+    #[serde(default)]
+    pub probe_statuses: Vec<ProbeStatus>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -112,6 +205,12 @@ pub struct DeploymentTask {
     pub stages: Vec<DeploymentStage>,
     pub created_at: String,
     pub finished_at: Option<String>,
+    #[serde(default)]
+    pub startup_pid: Option<String>,
+    #[serde(default)]
+    pub startup_log_path: Option<String>,
+    #[serde(default)]
+    pub probe_result: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -131,6 +230,70 @@ pub struct DeploymentLogEvent {
     pub line: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProbeStatusEvent {
+    pub task_id: String,
+    pub stage_key: String,
+    pub probe_statuses: Vec<ProbeStatus>,
+}
+
 fn default_true() -> bool {
     true
+}
+
+fn default_timeout() -> u64 {
+    120
+}
+
+fn default_interval() -> u64 {
+    3
+}
+
+fn default_success_policy() -> String {
+    "health_first".to_string()
+}
+
+fn default_probe_host() -> String {
+    "127.0.0.1".to_string()
+}
+
+fn default_probe_port() -> u16 {
+    8080
+}
+
+fn default_consecutive_successes() -> u32 {
+    2
+}
+
+fn default_http_method() -> String {
+    "GET".to_string()
+}
+
+fn default_success_keywords() -> Vec<String> {
+    vec!["Started".to_string()]
+}
+
+fn default_failure_keywords() -> Vec<String> {
+    vec![
+        "APPLICATION FAILED TO START".to_string(),
+        "Application run failed".to_string(),
+        "Port already in use".to_string(),
+        "Address already in use".to_string(),
+        "BindException".to_string(),
+        "OutOfMemoryError".to_string(),
+        "Unable to start web server".to_string(),
+        "Failed to start bean".to_string(),
+        "BeanCreationException".to_string(),
+        "NoClassDefFoundError".to_string(),
+        "ClassNotFoundException".to_string(),
+    ]
+}
+
+fn default_warning_keywords() -> Vec<String> {
+    vec![
+        "Exception".to_string(),
+        "ERROR".to_string(),
+        "WARN".to_string(),
+    ]
 }

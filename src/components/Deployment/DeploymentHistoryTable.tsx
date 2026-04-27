@@ -1,22 +1,22 @@
 import {
-  Button,
-  Descriptions,
-  Empty,
-  Input,
-  Modal,
-  Popconfirm,
-  Progress,
-  Space,
-  Table,
-  Tag,
-  Tooltip,
-  Typography
+    Button,
+    Descriptions,
+    Empty,
+    Input,
+    Modal,
+    Popconfirm,
+    Progress,
+    Space,
+    Table,
+    Tag,
+    Tooltip,
+    Typography
 } from 'antd'
 import {CopyOutlined, DeleteOutlined, FullscreenOutlined, PlayCircleOutlined} from '@ant-design/icons'
 import type {ColumnsType} from 'antd/es/table'
 import {useMemo, useRef, useState} from 'react'
 import {useWorkflowStore} from '../../store/useWorkflowStore'
-import type {DeploymentStage, DeploymentTask} from '../../types/domain'
+import type {DeploymentStage, DeploymentTask, ProbeStatus} from '../../types/domain'
 
 const {Text} = Typography
 
@@ -84,7 +84,28 @@ const stepTypeLabel = (type?: string) => {
     case 'http_check': return 'HTTP 健康检查'
     case 'log_check': return '日志关键字检测'
     case 'upload_file': return '文件上传'
+    case 'startup_probe': return '启动探针'
     default: return type ?? '-'
+  }
+}
+
+const probeTypeLabel = (type: string) => {
+  switch (type) {
+    case 'process': return '进程探针'
+    case 'port': return '端口探针'
+    case 'http': return 'HTTP 探针'
+    case 'log': return '日志探针'
+    default: return type
+  }
+}
+
+const probeStatusTag = (status: string) => {
+  switch (status) {
+    case 'success': return <Tag color="green">成功</Tag>
+    case 'failed': return <Tag color="red">失败</Tag>
+    case 'warning': return <Tag color="gold">告警</Tag>
+    case 'checking': return <Tag color="processing">检测中</Tag>
+    default: return <Tag>{status}</Tag>
   }
 }
 
@@ -292,6 +313,11 @@ export function DeploymentHistoryTable() {
               <Descriptions.Item label="失败原因" span={2}>
                 {['failed', 'cancelled'].includes(openTask.status) ? getFailureReason(openTask) : '-'}
               </Descriptions.Item>
+              {openTask.probeResult ? (
+                <Descriptions.Item label="探针结果" span={2}>
+                  <Tag color={openTask.status === 'success' ? 'green' : 'red'}>{openTask.probeResult}</Tag>
+                </Descriptions.Item>
+              ) : null}
             </Descriptions>
             <Table
               style={{marginTop: 16}}
@@ -328,7 +354,22 @@ export function DeploymentHistoryTable() {
                 },
                 {
                   title: '结果',
-                  render: (_, stage) => stage.message ?? '-',
+                  render: (_, stage) => (
+                    <Space direction="vertical" size={2}>
+                      <span>{stage.message ?? '-'}</span>
+                      {stage.probeStatuses && stage.probeStatuses.length > 0 ? (
+                        <div style={{marginTop: 4}}>
+                          {stage.probeStatuses.map((ps: ProbeStatus, idx: number) => (
+                            <div key={idx} style={{fontSize: 12, lineHeight: '18px'}}>
+                              {probeStatusTag(ps.status)} {probeTypeLabel(ps.probeType)}
+                              {ps.message ? `：${ps.message}` : ''}
+                              {ps.checkCount ? ` (${ps.checkCount}次)` : ''}
+                            </div>
+                          ))}
+                        </div>
+                      ) : null}
+                    </Space>
+                  ),
                 },
               ]}
             />

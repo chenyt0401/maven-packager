@@ -386,6 +386,62 @@ export interface DeployStep {
   config: DeployStepConfig
 }
 
+export interface ProcessProbeConfig {
+  enabled: boolean
+  pidFile?: string
+}
+
+export interface PortProbeConfig {
+  enabled: boolean
+  host: string
+  port: number
+  consecutiveSuccesses: number
+}
+
+export interface HttpProbeConfig {
+  enabled: boolean
+  url?: string
+  method: string
+  expectedStatusCodes?: number[]
+  expectedBodyContains?: string
+  consecutiveSuccesses: number
+}
+
+export interface LogProbeConfig {
+  enabled: boolean
+  logPath?: string
+  successPatterns: string[]
+  failurePatterns: string[]
+  warningPatterns: string[]
+  useRegex: boolean
+  onlyCurrentDeployLog: boolean
+}
+
+export interface StartupProbeConfig {
+  enabled: boolean
+  timeoutSeconds: number
+  intervalSeconds: number
+  processProbe?: ProcessProbeConfig
+  portProbe?: PortProbeConfig
+  httpProbe?: HttpProbeConfig
+  logProbe?: LogProbeConfig
+  successPolicy: string
+}
+
+export interface ProbeStatus {
+  probeType: string
+  status: string
+  message?: string
+  checkCount?: number
+  lastCheckAt?: string
+}
+
+export interface ProbeStatusEvent {
+  taskId: string
+  stageKey: string
+  probeStatuses: ProbeStatus[]
+}
+
 export interface DeploymentProfile {
   id: string
   name: string
@@ -394,6 +450,7 @@ export interface DeploymentProfile {
   remoteDeployPath: string
   deploymentSteps: DeployStep[]
   customCommands: DeploymentCustomCommand[]
+  startupProbe?: StartupProbeConfig
   createdAt?: string
   updatedAt?: string
 }
@@ -410,6 +467,7 @@ export interface DeploymentStage {
   currentRetry?: number
   durationMs?: number
   logs?: string[]
+  probeStatuses?: ProbeStatus[]
 }
 
 export interface DeploymentTask {
@@ -427,6 +485,9 @@ export interface DeploymentTask {
   stages: DeploymentStage[]
   createdAt: string
   finishedAt?: string
+  startupPid?: string
+  startupLogPath?: string
+  probeResult?: string
 }
 
 export interface StartDeploymentPayload {

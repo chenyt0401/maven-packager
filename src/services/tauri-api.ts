@@ -5,28 +5,29 @@ import {open} from '@tauri-apps/plugin-dialog'
 import {relaunch} from '@tauri-apps/plugin-process'
 import {check, type DownloadEvent, type Update} from '@tauri-apps/plugin-updater'
 import type {
-    BuildArtifact,
-    BuildCommandPayload,
-    BuildEnvironment,
-    BuildFinishedEvent,
-    BuildHistoryRecord,
-    BuildLogEvent,
-    BuildOptions,
-    BuildTemplate,
-    DeploymentLogEvent,
-    DeploymentProfile,
-    DeploymentTask,
-    EnvironmentSettings,
-    GitCommit,
-    GitPullResult,
-    GitRepositoryStatus,
-    GitSwitchBranchResult,
-    MavenProject,
-    ModuleDependencyGraph,
-    SaveServerProfilePayload,
-    ServerProfile,
-    StartBuildPayload,
-    StartDeploymentPayload,
+  BuildArtifact,
+  BuildCommandPayload,
+  BuildEnvironment,
+  BuildFinishedEvent,
+  BuildHistoryRecord,
+  BuildLogEvent,
+  BuildOptions,
+  BuildTemplate,
+  DeploymentLogEvent,
+  DeploymentProfile,
+  DeploymentTask,
+  EnvironmentSettings,
+  GitCommit,
+  GitPullResult,
+  GitRepositoryStatus,
+  GitSwitchBranchResult,
+  MavenProject,
+  ModuleDependencyGraph,
+  ProbeStatusEvent,
+  SaveServerProfilePayload,
+  ServerProfile,
+  StartBuildPayload,
+  StartDeploymentPayload,
 } from '../types/domain'
 
 type TauriWindow = Window & { __TAURI_INTERNALS__?: unknown }
@@ -249,6 +250,7 @@ export async function registerDeploymentEvents(
   onLog: (event: DeploymentLogEvent) => void,
   onUpdated: (event: DeploymentTask) => void,
   onFinished: (event: DeploymentTask) => void,
+  onProbeStatus?: (event: ProbeStatusEvent) => void,
 ) {
   if (!isTauriRuntime()) {
     return () => undefined
@@ -263,11 +265,17 @@ export async function registerDeploymentEvents(
   const unlistenFinished = await listen<DeploymentTask>('deployment-finished', (event) => {
     onFinished(event.payload)
   })
+  const unlistenProbeStatus = onProbeStatus
+    ? await listen<ProbeStatusEvent>('probe-status', (event) => {
+        onProbeStatus(event.payload)
+      })
+    : undefined
 
   return () => {
     unlistenLog()
     unlistenUpdated()
     unlistenFinished()
+    unlistenProbeStatus?.()
   }
 }
 

@@ -1,33 +1,33 @@
 import {
-    Alert,
-    Button,
-    Card,
-    Checkbox,
-    Empty,
-    Input,
-    InputNumber,
-    List,
-    Modal,
-    Popconfirm,
-    Select,
-    Space,
-    Steps,
-    Tabs,
-    Tag,
-    Typography,
+  Alert,
+  Button,
+  Card,
+  Checkbox,
+  Empty,
+  Input,
+  InputNumber,
+  List,
+  Modal,
+  Popconfirm,
+  Select,
+  Space,
+  Steps,
+  Tabs,
+  Tag,
+  Typography,
 } from 'antd'
 import {
-    ArrowDownOutlined,
-    ArrowUpOutlined,
-    CloudServerOutlined,
-    DeleteOutlined,
-    DeploymentUnitOutlined,
-    HistoryOutlined,
-    InboxOutlined,
-    PlayCircleOutlined,
-    PlusOutlined,
-    SaveOutlined,
-    StopOutlined,
+  ArrowDownOutlined,
+  ArrowUpOutlined,
+  CloudServerOutlined,
+  DeleteOutlined,
+  DeploymentUnitOutlined,
+  HistoryOutlined,
+  InboxOutlined,
+  PlayCircleOutlined,
+  PlusOutlined,
+  SaveOutlined,
+  StopOutlined,
 } from '@ant-design/icons'
 import {useEffect, useMemo, useRef, useState} from 'react'
 import {DeploymentHistoryTable} from './DeploymentHistoryTable'
@@ -37,14 +37,16 @@ import {useAppStore} from '../../store/useAppStore'
 import {useNavigationStore} from '../../store/navigationStore'
 import {useWorkflowStore} from '../../store/useWorkflowStore'
 import type {
-    BuildArtifact,
-    DeployFailureStrategy,
-    DeploymentProfile,
-    DeploymentStage,
-    DeployStep,
-    DeployStepType,
-    SaveServerProfilePayload,
-    ServerProfile,
+  BuildArtifact,
+  DeployFailureStrategy,
+  DeploymentProfile,
+  DeploymentStage,
+  DeployStep,
+  DeployStepType,
+  ProbeStatus,
+  SaveServerProfilePayload,
+  ServerProfile,
+  StartupProbeConfig,
 } from '../../types/domain'
 
 const {Text} = Typography
@@ -60,6 +62,31 @@ const createServerDraft = (): SaveServerProfilePayload => ({
   group: '',
 })
 
+const createDefaultStartupProbe = (): StartupProbeConfig => ({
+  enabled: true,
+  timeoutSeconds: 120,
+  intervalSeconds: 3,
+  processProbe: {enabled: true},
+  portProbe: {enabled: true, host: '127.0.0.1', port: 8080, consecutiveSuccesses: 2},
+  httpProbe: {enabled: false, method: 'GET', consecutiveSuccesses: 2},
+  logProbe: {
+    enabled: true,
+    successPatterns: ['Started'],
+    failurePatterns: [
+      'APPLICATION FAILED TO START',
+      'Application run failed',
+      'Port already in use',
+      'Address already in use',
+      'BindException',
+      'OutOfMemoryError',
+    ],
+    warningPatterns: ['Exception', 'ERROR'],
+    useRegex: false,
+    onlyCurrentDeployLog: true,
+  },
+  successPolicy: 'health_first',
+})
+
 const createDeploymentDraft = (): DeploymentProfile => ({
   id: crypto.randomUUID(),
   name: '',
@@ -68,6 +95,7 @@ const createDeploymentDraft = (): DeploymentProfile => ({
   remoteDeployPath: '',
   deploymentSteps: [],
   customCommands: [],
+  startupProbe: createDefaultStartupProbe(),
 })
 
 const stepTypeOptions: {label: string; value: DeployStepType}[] = [
@@ -186,33 +214,34 @@ const createSpringBootJarSteps = (): DeployStep[] => {
     createDeployStep('wait', 40, '等待端口释放'),
     createDeployStep('ssh_command', 50, '替换 jar 文件'),
     createDeployStep('ssh_command', 60, '启动新服务'),
-    createDeployStep('wait', 70, '等待服务初始化'),
-    createDeployStep('port_check', 80, '检查服务端口'),
-    createDeployStep('http_check', 90, 'HTTP 健康检查'),
-    createDeployStep('log_check', 100, '检查启动日志'),
   ]
 
   steps[1].config = {command: 'if [ -f "${remoteDeployPath}/${artifactName}" ]; then cp -f "${remoteDeployPath}/${artifactName}" "${remoteDeployPath}/${artifactName}.${date}"; fi', successExitCodes: [0]}
-  steps[2].config = {command: 'pkill -f "${artifactName}" || true', successExitCodes: [0]}
+  steps[2].config = {command: 'PID_FILE="${remoteDeployPath}/${artifactName}.pid"; if [ -f "$PID_FILE" ]; then PID=$(cat "$PID_FILE"); kill "$PID" 2>/dev/null || true; rm -f "$PID_FILE"; fi; pkill -f "${artifactName}" || true', successExitCodes: [0]}
   steps[3].config = {waitSeconds: 3}
   steps[4].config = {command: 'mv -f "${remoteDeployPath}/.${artifactName}.uploading" "${remoteDeployPath}/${artifactName}"', successExitCodes: [0]}
-  steps[5].config = {command: 'nohup java -jar "${remoteDeployPath}/${artifactName}" > "${remoteDeployPath}/${artifactName}.log" 2>&1 &', successExitCodes: [0]}
-  steps[6].config = {waitSeconds: 10}
-  steps[7].config = {host: '127.0.0.1', port: 8080, checkIntervalSeconds: 3}
-  steps[8].config = {
-    url: 'http://127.0.0.1:8080/actuator/health',
-    method: 'GET',
-    expectedStatusCodes: [200],
-    expectedBodyContains: 'UP',
-    checkIntervalSeconds: 5,
-  }
-  steps[9].config = {
-    logPath: '${remoteDeployPath}/${artifactName}.log',
-    successKeywords: ['Started'],
-    failureKeywords: ['Exception', 'ERROR', 'Address already in use'],
-    checkIntervalSeconds: 3,
-  }
+  steps[5].config = {command: 'DEPLOY_LOG="${remoteDeployPath}/${artifactName}.$(date +%Y%m%d_%H%M%S).log"; nohup java -jar "${remoteDeployPath}/${artifactName}" > "$DEPLOY_LOG" 2>&1 & echo $! > "${remoteDeployPath}/${artifactName}.pid"; echo "PID=$!; LOG=$DEPLOY_LOG"', successExitCodes: [0]}
   return steps
+}
+
+const probeStatusIcon = (status: string) => {
+  switch (status) {
+    case 'success': return '✅'
+    case 'failed': return '❌'
+    case 'warning': return '⚠️'
+    case 'checking': return '🔄'
+    default: return '⏳'
+  }
+}
+
+const probeTypeLabel = (type: string) => {
+  switch (type) {
+    case 'process': return '进程探针'
+    case 'port': return '端口探针'
+    case 'http': return 'HTTP 探针'
+    case 'log': return '日志探针'
+    default: return type
+  }
 }
 
 const deploymentStageStatus = (status: DeploymentStage['status']) => {
@@ -490,6 +519,7 @@ export function DeploymentCenterPanel() {
       ...profile,
       deploymentSteps: profile.deploymentSteps ?? [],
       customCommands: profile.customCommands ?? [],
+      startupProbe: profile.startupProbe ?? createDefaultStartupProbe(),
     })
     setSelectedStepId(profile.deploymentSteps?.[0]?.id)
   }
@@ -1038,6 +1068,319 @@ export function DeploymentCenterPanel() {
                     </Space>
                   </Card>
 
+                  <Card
+                    title="启动探针"
+                    size="small"
+                    className="panel-card"
+                    extra={(
+                      <Checkbox
+                        checked={deploymentDraft.startupProbe?.enabled ?? true}
+                        onChange={(event) => setDeploymentDraft((state) => ({
+                          ...state,
+                          startupProbe: {...(state.startupProbe ?? createDefaultStartupProbe()), enabled: event.target.checked},
+                        }))}
+                      >
+                        启用
+                      </Checkbox>
+                    )}
+                  >
+                    {deploymentDraft.startupProbe?.enabled !== false ? (
+                      <Space direction="vertical" size={8} style={{width: '100%'}}>
+                        <Space wrap>
+                          <div className="step-field">
+                            <Text type="secondary">超时（秒）</Text>
+                            <InputNumber
+                              min={10}
+                              max={600}
+                              value={deploymentDraft.startupProbe?.timeoutSeconds ?? 120}
+                              onChange={(value) => setDeploymentDraft((state) => ({
+                                ...state,
+                                startupProbe: {...(state.startupProbe ?? createDefaultStartupProbe()), timeoutSeconds: Number(value) || 120},
+                              }))}
+                            />
+                          </div>
+                          <div className="step-field">
+                            <Text type="secondary">检测间隔（秒）</Text>
+                            <InputNumber
+                              min={1}
+                              max={30}
+                              value={deploymentDraft.startupProbe?.intervalSeconds ?? 3}
+                              onChange={(value) => setDeploymentDraft((state) => ({
+                                ...state,
+                                startupProbe: {...(state.startupProbe ?? createDefaultStartupProbe()), intervalSeconds: Number(value) || 3},
+                              }))}
+                            />
+                          </div>
+                        </Space>
+                        <Text type="secondary" style={{fontSize: 12}}>
+                          启动命令负责"把服务拉起来"，启动探针负责"证明服务真的起来了"。部署结果由探针综合判定。
+                        </Text>
+                        <Card type="inner" size="small" title="进程探针" extra={
+                          <Checkbox
+                            checked={deploymentDraft.startupProbe?.processProbe?.enabled ?? true}
+                            onChange={(event) => setDeploymentDraft((state) => ({
+                              ...state,
+                              startupProbe: {
+                                ...(state.startupProbe ?? createDefaultStartupProbe()),
+                                processProbe: {...(state.startupProbe?.processProbe ?? {enabled: true}), enabled: event.target.checked},
+                              },
+                            }))}
+                          >启用</Checkbox>
+                        }>
+                          {deploymentDraft.startupProbe?.processProbe?.enabled !== false ? (
+                            <div className="step-field">
+                              <Text type="secondary">PID 文件路径（留空使用默认）</Text>
+                              <Input
+                                placeholder="${remoteDeployPath}/${artifactName}.pid"
+                                value={deploymentDraft.startupProbe?.processProbe?.pidFile ?? ''}
+                                onChange={(event) => setDeploymentDraft((state) => ({
+                                  ...state,
+                                  startupProbe: {
+                                    ...(state.startupProbe ?? createDefaultStartupProbe()),
+                                    processProbe: {...(state.startupProbe?.processProbe ?? {enabled: true}), pidFile: event.target.value || undefined},
+                                  },
+                                }))}
+                              />
+                            </div>
+                          ) : <Text type="secondary">未启用</Text>}
+                        </Card>
+                        <Card type="inner" size="small" title="端口探针" extra={
+                          <Checkbox
+                            checked={deploymentDraft.startupProbe?.portProbe?.enabled ?? true}
+                            onChange={(event) => setDeploymentDraft((state) => ({
+                              ...state,
+                              startupProbe: {
+                                ...(state.startupProbe ?? createDefaultStartupProbe()),
+                                portProbe: {...(state.startupProbe?.portProbe ?? {enabled: true, host: '127.0.0.1', port: 8080, consecutiveSuccesses: 2}), enabled: event.target.checked},
+                              },
+                            }))}
+                          >启用</Checkbox>
+                        }>
+                          {deploymentDraft.startupProbe?.portProbe?.enabled !== false ? (
+                            <Space wrap>
+                              <div className="step-field">
+                                <Text type="secondary">主机</Text>
+                                <Input
+                                  value={deploymentDraft.startupProbe?.portProbe?.host ?? '127.0.0.1'}
+                                  onChange={(event) => setDeploymentDraft((state) => ({
+                                    ...state,
+                                    startupProbe: {
+                                      ...(state.startupProbe ?? createDefaultStartupProbe()),
+                                      portProbe: {...(state.startupProbe?.portProbe ?? {enabled: true, host: '127.0.0.1', port: 8080, consecutiveSuccesses: 2}), host: event.target.value},
+                                    },
+                                  }))}
+                                />
+                              </div>
+                              <div className="step-field">
+                                <Text type="secondary">端口</Text>
+                                <InputNumber
+                                  min={1}
+                                  max={65535}
+                                  value={deploymentDraft.startupProbe?.portProbe?.port ?? 8080}
+                                  onChange={(value) => setDeploymentDraft((state) => ({
+                                    ...state,
+                                    startupProbe: {
+                                      ...(state.startupProbe ?? createDefaultStartupProbe()),
+                                      portProbe: {...(state.startupProbe?.portProbe ?? {enabled: true, host: '127.0.0.1', port: 8080, consecutiveSuccesses: 2}), port: Number(value) || 8080},
+                                    },
+                                  }))}
+                                />
+                              </div>
+                              <div className="step-field">
+                                <Text type="secondary">连续成功次数</Text>
+                                <InputNumber
+                                  min={1}
+                                  max={10}
+                                  value={deploymentDraft.startupProbe?.portProbe?.consecutiveSuccesses ?? 2}
+                                  onChange={(value) => setDeploymentDraft((state) => ({
+                                    ...state,
+                                    startupProbe: {
+                                      ...(state.startupProbe ?? createDefaultStartupProbe()),
+                                      portProbe: {...(state.startupProbe?.portProbe ?? {enabled: true, host: '127.0.0.1', port: 8080, consecutiveSuccesses: 2}), consecutiveSuccesses: Number(value) || 2},
+                                    },
+                                  }))}
+                                />
+                              </div>
+                            </Space>
+                          ) : <Text type="secondary">未启用</Text>}
+                        </Card>
+                        <Card type="inner" size="small" title="HTTP 探针" extra={
+                          <Checkbox
+                            checked={deploymentDraft.startupProbe?.httpProbe?.enabled ?? false}
+                            onChange={(event) => setDeploymentDraft((state) => ({
+                              ...state,
+                              startupProbe: {
+                                ...(state.startupProbe ?? createDefaultStartupProbe()),
+                                httpProbe: {...(state.startupProbe?.httpProbe ?? {enabled: false, method: 'GET', consecutiveSuccesses: 2}), enabled: event.target.checked},
+                              },
+                            }))}
+                          >启用</Checkbox>
+                        }>
+                          {deploymentDraft.startupProbe?.httpProbe?.enabled ? (
+                            <Space direction="vertical" size={8} style={{width: '100%'}}>
+                              <div className="step-field step-field-full">
+                                <Text type="secondary">请求地址</Text>
+                                <Input
+                                  placeholder="http://127.0.0.1:8080/actuator/health"
+                                  value={deploymentDraft.startupProbe?.httpProbe?.url ?? ''}
+                                  onChange={(event) => setDeploymentDraft((state) => ({
+                                    ...state,
+                                    startupProbe: {
+                                      ...(state.startupProbe ?? createDefaultStartupProbe()),
+                                      httpProbe: {...(state.startupProbe?.httpProbe ?? {enabled: true, method: 'GET', consecutiveSuccesses: 2}), url: event.target.value || undefined},
+                                    },
+                                  }))}
+                                />
+                              </div>
+                              <Space wrap>
+                                <div className="step-field">
+                                  <Text type="secondary">请求方法</Text>
+                                  <Select
+                                    value={deploymentDraft.startupProbe?.httpProbe?.method ?? 'GET'}
+                                    options={[{label: 'GET', value: 'GET'}, {label: 'POST', value: 'POST'}]}
+                                    onChange={(value) => setDeploymentDraft((state) => ({
+                                      ...state,
+                                      startupProbe: {
+                                        ...(state.startupProbe ?? createDefaultStartupProbe()),
+                                        httpProbe: {...(state.startupProbe?.httpProbe ?? {enabled: true, method: 'GET', consecutiveSuccesses: 2}), method: value},
+                                      },
+                                    }))}
+                                  />
+                                </div>
+                                <div className="step-field">
+                                  <Text type="secondary">期望状态码</Text>
+                                  <Input
+                                    value={(deploymentDraft.startupProbe?.httpProbe?.expectedStatusCodes ?? [200]).join(',')}
+                                    onChange={(event) => setDeploymentDraft((state) => ({
+                                      ...state,
+                                      startupProbe: {
+                                        ...(state.startupProbe ?? createDefaultStartupProbe()),
+                                        httpProbe: {...(state.startupProbe?.httpProbe ?? {enabled: true, method: 'GET', consecutiveSuccesses: 2}), expectedStatusCodes: toNumberList(event.target.value, [200])},
+                                      },
+                                    }))}
+                                  />
+                                </div>
+                                <div className="step-field">
+                                  <Text type="secondary">连续成功次数</Text>
+                                  <InputNumber
+                                    min={1}
+                                    max={10}
+                                    value={deploymentDraft.startupProbe?.httpProbe?.consecutiveSuccesses ?? 2}
+                                    onChange={(value) => setDeploymentDraft((state) => ({
+                                      ...state,
+                                      startupProbe: {
+                                        ...(state.startupProbe ?? createDefaultStartupProbe()),
+                                        httpProbe: {...(state.startupProbe?.httpProbe ?? {enabled: true, method: 'GET', consecutiveSuccesses: 2}), consecutiveSuccesses: Number(value) || 2},
+                                      },
+                                    }))}
+                                  />
+                                </div>
+                              </Space>
+                            </Space>
+                          ) : <Text type="secondary">未启用</Text>}
+                        </Card>
+                        <Card type="inner" size="small" title="日志探针" extra={
+                          <Checkbox
+                            checked={deploymentDraft.startupProbe?.logProbe?.enabled ?? true}
+                            onChange={(event) => setDeploymentDraft((state) => ({
+                              ...state,
+                              startupProbe: {
+                                ...(state.startupProbe ?? createDefaultStartupProbe()),
+                                logProbe: {...(state.startupProbe?.logProbe ?? createDefaultStartupProbe().logProbe!), enabled: event.target.checked},
+                              },
+                            }))}
+                          >启用</Checkbox>
+                        }>
+                          {deploymentDraft.startupProbe?.logProbe?.enabled !== false ? (
+                            <Space direction="vertical" size={8} style={{width: '100%'}}>
+                              <div className="step-field step-field-full">
+                                <Text type="secondary">日志路径（留空使用本次部署独立日志）</Text>
+                                <Input
+                                  placeholder="${remoteDeployPath}/${artifactName}.YYYYMMDD_HHMMSS.log"
+                                  value={deploymentDraft.startupProbe?.logProbe?.logPath ?? ''}
+                                  onChange={(event) => setDeploymentDraft((state) => ({
+                                    ...state,
+                                    startupProbe: {
+                                      ...(state.startupProbe ?? createDefaultStartupProbe()),
+                                      logProbe: {...(state.startupProbe?.logProbe ?? createDefaultStartupProbe().logProbe!), logPath: event.target.value || undefined},
+                                    },
+                                  }))}
+                                />
+                              </div>
+                              <div className="step-field step-field-full">
+                                <Text type="secondary">成功关键字（逗号分隔）</Text>
+                                <Input
+                                  value={(deploymentDraft.startupProbe?.logProbe?.successPatterns ?? ['Started']).join(',')}
+                                  onChange={(event) => setDeploymentDraft((state) => ({
+                                    ...state,
+                                    startupProbe: {
+                                      ...(state.startupProbe ?? createDefaultStartupProbe()),
+                                      logProbe: {...(state.startupProbe?.logProbe ?? createDefaultStartupProbe().logProbe!), successPatterns: toStringList(event.target.value, ['Started'])},
+                                    },
+                                  }))}
+                                />
+                              </div>
+                              <div className="step-field step-field-full">
+                                <Text type="secondary">强失败关键字（匹配即判失败，逗号分隔）</Text>
+                                <Input
+                                  value={(deploymentDraft.startupProbe?.logProbe?.failurePatterns ?? []).join(',')}
+                                  onChange={(event) => setDeploymentDraft((state) => ({
+                                    ...state,
+                                    startupProbe: {
+                                      ...(state.startupProbe ?? createDefaultStartupProbe()),
+                                      logProbe: {...(state.startupProbe?.logProbe ?? createDefaultStartupProbe().logProbe!), failurePatterns: toStringList(event.target.value)},
+                                    },
+                                  }))}
+                                />
+                              </div>
+                              <div className="step-field step-field-full">
+                                <Text type="secondary">告警关键字（只标黄展示，逗号分隔）</Text>
+                                <Input
+                                  value={(deploymentDraft.startupProbe?.logProbe?.warningPatterns ?? []).join(',')}
+                                  onChange={(event) => setDeploymentDraft((state) => ({
+                                    ...state,
+                                    startupProbe: {
+                                      ...(state.startupProbe ?? createDefaultStartupProbe()),
+                                      logProbe: {...(state.startupProbe?.logProbe ?? createDefaultStartupProbe().logProbe!), warningPatterns: toStringList(event.target.value)},
+                                    },
+                                  }))}
+                                />
+                              </div>
+                              <Space wrap>
+                                <Checkbox
+                                  checked={deploymentDraft.startupProbe?.logProbe?.useRegex ?? false}
+                                  onChange={(event) => setDeploymentDraft((state) => ({
+                                    ...state,
+                                    startupProbe: {
+                                      ...(state.startupProbe ?? createDefaultStartupProbe()),
+                                      logProbe: {...(state.startupProbe?.logProbe ?? createDefaultStartupProbe().logProbe!), useRegex: event.target.checked},
+                                    },
+                                  }))}
+                                >
+                                  使用正则表达式
+                                </Checkbox>
+                                <Checkbox
+                                  checked={deploymentDraft.startupProbe?.logProbe?.onlyCurrentDeployLog ?? true}
+                                  onChange={(event) => setDeploymentDraft((state) => ({
+                                    ...state,
+                                    startupProbe: {
+                                      ...(state.startupProbe ?? createDefaultStartupProbe()),
+                                      logProbe: {...(state.startupProbe?.logProbe ?? createDefaultStartupProbe().logProbe!), onlyCurrentDeployLog: event.target.checked},
+                                    },
+                                  }))}
+                                >
+                                  仅检测本次部署日志
+                                </Checkbox>
+                              </Space>
+                            </Space>
+                          ) : <Text type="secondary">未启用</Text>}
+                        </Card>
+                      </Space>
+                    ) : (
+                      <Text type="secondary">启动探针未启用，部署结果将由启动命令退出码决定。</Text>
+                    )}
+                  </Card>
+
                   <Space wrap>
                     <Button type="primary" icon={<SaveOutlined />} onClick={() => void saveDeploymentProfile(deploymentDraftRef.current)}>
                       保存服务映射
@@ -1226,9 +1569,32 @@ export function DeploymentCenterPanel() {
                         items={deploymentStages.map((stage) => ({
                           title: stage.label,
                           status: deploymentStageStatus(stage.status),
-                          description: deploymentStageDescription(stage),
+                          description: (
+                            <Space direction="vertical" size={2}>
+                              <span>{deploymentStageDescription(stage)}</span>
+                              {stage.probeStatuses && stage.probeStatuses.length > 0 ? (
+                                <div style={{marginTop: 4}}>
+                                  {stage.probeStatuses.map((ps: ProbeStatus, idx: number) => (
+                                    <div key={idx} style={{fontSize: 12, lineHeight: '20px'}}>
+                                      {probeStatusIcon(ps.status)} {probeTypeLabel(ps.probeType)}：{ps.message ?? ps.status}
+                                      {ps.checkCount ? ` (已检测 ${ps.checkCount} 次)` : ''}
+                                    </div>
+                                  ))}
+                                </div>
+                              ) : null}
+                            </Space>
+                          ),
                         }))}
                       />
+                      {currentDeploymentTask.probeResult ? (
+                        <Alert
+                          type={currentDeploymentTask.status === 'success' ? 'success' : 'error'}
+                          showIcon
+                          message={currentDeploymentTask.status === 'success' ? '启动探针检测通过' : '启动探针检测失败'}
+                          description={currentDeploymentTask.probeResult}
+                          style={{marginTop: 8}}
+                        />
+                      ) : null}
                     </div>
                   ) : null}
                 </Space>
