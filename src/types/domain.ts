@@ -442,6 +442,8 @@ export interface ProbeStatusEvent {
   probeStatuses: ProbeStatus[]
 }
 
+export type LogNamingMode = 'date' | 'fixed'
+
 export interface DeploymentProfile {
   id: string
   name: string
@@ -450,6 +452,8 @@ export interface DeploymentProfile {
   remoteArtifactName?: string
   remoteDeployPath: string
   logPath?: string
+  logNamingMode: LogNamingMode
+  logName?: string
   enableDeployLog: boolean
   deploymentSteps: DeployStep[]
   customCommands: DeploymentCustomCommand[]

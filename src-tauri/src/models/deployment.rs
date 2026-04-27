@@ -71,6 +71,10 @@ pub struct DeploymentProfile {
     pub remote_deploy_path: String,
     #[serde(default)]
     pub log_path: Option<String>,
+    #[serde(default = "default_log_naming_mode")]
+    pub log_naming_mode: String,
+    #[serde(default)]
+    pub log_name: Option<String>,
     #[serde(default = "default_true")]
     pub enable_deploy_log: bool,
     #[serde(default)]
@@ -246,6 +250,10 @@ pub struct ProbeStatusEvent {
 
 fn default_true() -> bool {
     true
+}
+
+fn default_log_naming_mode() -> String {
+    "date".to_string()
 }
 
 fn default_timeout() -> u64 {

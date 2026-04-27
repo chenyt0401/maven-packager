@@ -43,6 +43,7 @@ import type {
   DeploymentStage,
   DeployStep,
   DeployStepType,
+  LogNamingMode,
   ProbeStatus,
   SaveServerProfilePayload,
   ServerProfile,
@@ -108,6 +109,8 @@ const createDeploymentDraft = (): DeploymentProfile => ({
   remoteArtifactName: '',
   remoteDeployPath: '',
   logPath: '',
+  logNamingMode: 'date',
+  logName: '',
   enableDeployLog: true,
   deploymentSteps: [],
   customCommands: [],
@@ -777,6 +780,8 @@ export function DeploymentCenterPanel() {
       ...profile,
       remoteArtifactName: profile.remoteArtifactName ?? '',
       logPath: profile.logPath ?? '',
+      logNamingMode: profile.logNamingMode ?? 'date',
+      logName: profile.logName ?? '',
       enableDeployLog: profile.enableDeployLog ?? true,
       deploymentSteps: profile.deploymentSteps ?? [],
       customCommands: profile.customCommands ?? [],
@@ -1356,6 +1361,24 @@ export function DeploymentCenterPanel() {
                       value={deploymentDraft.logPath ?? ''}
                       onChange={(event) => setDeploymentDraft((state) => ({...state, logPath: event.target.value || undefined}))}
                     />
+                    <Select
+                      value={deploymentDraft.logNamingMode ?? 'date'}
+                      style={{width: 140}}
+                      options={[
+                        {label: '日期格式', value: 'date'},
+                        {label: '固定名称', value: 'fixed'},
+                      ]}
+                      onChange={(value: LogNamingMode) => setDeploymentDraft((state) => ({...state, logNamingMode: value}))}
+                    />
+                    {deploymentDraft.logNamingMode === 'fixed' && (
+                      <Input
+                        addonBefore="日志名称"
+                        placeholder="固定日志文件名（不含路径和扩展名）"
+                        style={{minWidth: 280}}
+                        value={deploymentDraft.logName ?? ''}
+                        onChange={(event) => setDeploymentDraft((state) => ({...state, logName: event.target.value || undefined}))}
+                      />
+                    )}
                     <Checkbox
                       checked={deploymentDraft.enableDeployLog ?? true}
                       onChange={(event) => setDeploymentDraft((state) => ({...state, enableDeployLog: event.target.checked}))}

@@ -182,23 +182,32 @@ impl ProbeContext {
         remote_artifact_name: &str,
         custom_log_path: Option<&str>,
         enable_deploy_log: bool,
+        log_naming_mode: &str,
+        log_name: Option<&str>,
     ) -> Self {
         let base_name = remote_artifact_name
             .rsplit_once('.')
             .map(|(name, _)| name)
             .unwrap_or(remote_artifact_name);
+        let deploy_log_path = match log_naming_mode {
+            "fixed" => {
+                let name = log_name.unwrap_or(base_name);
+                format!("{}/logs/{}.log", remote_deploy_path, name)
+            }
+            _ => format!(
+                "{}/logs/{}-{}.log",
+                remote_deploy_path,
+                base_name,
+                chrono::Local::now().format("%Y%m%d%H%M%S")
+            ),
+        };
         Self {
             remote_deploy_path: remote_deploy_path.to_string(),
             artifact_name: artifact_name.to_string(),
             remote_artifact_name: remote_artifact_name.to_string(),
             remote_artifact_base_name: base_name.to_string(),
             default_pid_file: format!("{}/{}.pid", remote_deploy_path, base_name),
-            deploy_log_path: format!(
-                "{}/logs/{}-{}.log",
-                remote_deploy_path,
-                base_name,
-                chrono::Local::now().format("%Y%m%d%H%M%S")
-            ),
+            deploy_log_path,
             log_path_file: format!("{}/{}.log.path", remote_deploy_path, base_name),
             custom_log_path: custom_log_path.map(|s| s.to_string()),
             enable_deploy_log,
@@ -738,12 +747,16 @@ fn evaluate_success(
 }
 
 fn expand_probe_tokens(value: &str, context: &ProbeContext) -> String {
-    let today = chrono::Local::now().format("%Y%m%d").to_string();
+    let now = chrono::Local::now();
+    let today = now.format("%Y%m%d").to_string();
+    let timestamp = now.format("%Y%m%d%H%M%S").to_string();
     value
         .replace("${remoteDeployPath}", &context.remote_deploy_path)
         .replace("${artifactName}", &context.artifact_name)
         .replace("${remoteArtifactName}", &context.remote_artifact_name)
         .replace("${date}", &today)
+        .replace("${timestamp}", &timestamp)
+        .replace("${logName}", &context.deploy_log_path)
 }
 
 fn shell_quote(value: &str) -> String {

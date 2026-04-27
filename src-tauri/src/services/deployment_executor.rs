@@ -63,6 +63,8 @@ struct DeploymentContext {
     remote_artifact_name: String,
     remote_deploy_path: String,
     log_path: Option<String>,
+    log_naming_mode: String,
+    log_name: Option<String>,
     enable_deploy_log: bool,
 }
 
@@ -193,12 +195,20 @@ fn execute_deployment(
         .as_deref()
         .filter(|value| !value.trim().is_empty())
         .map(|value| value.to_string());
+    let log_naming_mode = profile.log_naming_mode.clone();
+    let log_name = profile
+        .log_name
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| value.to_string());
     let context = DeploymentContext {
         artifact_path: payload.local_artifact_path.clone(),
         artifact_name: artifact_name.clone(),
         remote_artifact_name,
         remote_deploy_path: normalize_remote_dir(&profile.remote_deploy_path),
         log_path,
+        log_naming_mode,
+        log_name,
         enable_deploy_log: profile.enable_deploy_log,
     };
     let steps = normalized_steps(&profile, &context);
@@ -448,6 +458,8 @@ fn execute_startup_probe(
         &context.remote_artifact_name,
         context.log_path.as_deref(),
         context.enable_deploy_log,
+        &context.log_naming_mode,
+        context.log_name.as_deref(),
     );
 
     let shared_probe_statuses: Arc<Mutex<Vec<ProbeStatus>>> = Arc::new(Mutex::new(Vec::new()));
@@ -965,7 +977,13 @@ fn legacy_steps_from_custom_commands(
         .unwrap_or(&context.remote_artifact_name);
     let pid_file = format!("{}/{}.pid", context.remote_deploy_path, base_name);
     let log_dir = format!("{}/logs", context.remote_deploy_path);
-    let default_log_file = format!("{}/{}-$(date +%Y%m%d%H%M%S).log", log_dir, base_name);
+    let default_log_file = match context.log_naming_mode.as_str() {
+        "fixed" => {
+            let name = context.log_name.as_deref().unwrap_or(base_name);
+            format!("{}/{}.log", log_dir, name)
+        }
+        _ => format!("{}/{}-$(date +%Y%m%d%H%M%S).log", log_dir, base_name),
+    };
     let log_file = context.log_path.as_deref().unwrap_or(&default_log_file);
     let log_path_file = format!("{}/{}.log.path", context.remote_deploy_path, base_name);
     let start_command = if context.enable_deploy_log {
@@ -1317,13 +1335,33 @@ where
 }
 
 fn expand_tokens(value: &str, context: &DeploymentContext) -> String {
-    let today = chrono::Local::now().format("%Y%m%d").to_string();
+    let now = chrono::Local::now();
+    let today = now.format("%Y%m%d").to_string();
+    let timestamp = now.format("%Y%m%d%H%M%S").to_string();
+    let log_name_resolved = match context.log_naming_mode.as_str() {
+        "fixed" => context
+            .log_name
+            .as_deref()
+            .unwrap_or(&context.remote_artifact_name)
+            .to_string(),
+        _ => format!(
+            "{}-{}",
+            context
+                .remote_artifact_name
+                .rsplit_once('.')
+                .map(|(n, _)| n)
+                .unwrap_or(&context.remote_artifact_name),
+            timestamp
+        ),
+    };
     value
         .replace("${artifactPath}", &context.artifact_path)
         .replace("${artifactName}", &context.artifact_name)
         .replace("${remoteArtifactName}", &context.remote_artifact_name)
         .replace("${remoteDeployPath}", &context.remote_deploy_path)
         .replace("${date}", &today)
+        .replace("${timestamp}", &timestamp)
+        .replace("${logName}", &log_name_resolved)
 }
 
 fn normalize_remote_dir(value: &str) -> String {
