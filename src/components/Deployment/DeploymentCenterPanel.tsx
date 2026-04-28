@@ -96,6 +96,7 @@ const createDefaultStartupProbe = (): StartupProbeConfig => ({
       'APPLICATION FAILED TO START',
       'Application run failed',
       'Port already in use',
+      'Web server failed to start',
       'Address already in use',
       'BindException',
       'OutOfMemoryError',
@@ -174,9 +175,17 @@ const createDefaultStepConfig = (type: DeployStepType): DeployStep['config'] => 
       }
     case 'log_check':
       return {
-        logPath: '${remoteDeployPath}/${artifactName}.log',
+        logPath: '${logFile}',
         successKeywords: ['Started'],
-        failureKeywords: ['Exception', 'ERROR', 'Address already in use'],
+        failureKeywords: [
+          'APPLICATION FAILED TO START',
+          'Application run failed',
+          'Port already in use',
+          'Web server failed to start',
+          'Address already in use',
+          'BindException',
+          'OutOfMemoryError',
+        ],
         checkIntervalSeconds: 3,
       }
     case 'upload_file':
@@ -248,6 +257,15 @@ const stepSummary = (step: DeployStep) => {
   }
 }
 
+const stopPortOwnerFragment =
+  'if [ -n "${portProbePort}" ]; then echo "端口 Java 进程清理：${portProbePort}"; find_port_pids() { if command -v lsof >/dev/null 2>&1; then lsof -nP -t -iTCP:${portProbePort} -sTCP:LISTEN 2>/dev/null; elif command -v ss >/dev/null 2>&1; then ss -ltnp 2>/dev/null | awk \'$4 ~ /:${portProbePort}$/ {print}\' | grep -o "pid=[0-9]*" | cut -d= -f2; elif command -v fuser >/dev/null 2>&1; then fuser -n tcp ${portProbePort} 2>/dev/null; else PORT_HEX=$(printf "%04X" ${portProbePort}); INODES=$(awk -v p=":$PORT_HEX" \'$4=="0A" && toupper($2) ~ p"$" {gsub(/\\r/,"",$10); print $10}\' /proc/net/tcp /proc/net/tcp6 2>/dev/null | sort -u); for inode in $INODES; do for fd in /proc/[0-9]*/fd/*; do link=$(readlink "$fd" 2>/dev/null || true); if [ "$link" = "socket:[$inode]" ]; then pid=${fd#/proc/}; echo "${pid%%/*}"; fi; done; done; fi; }; java_port_pids() { for pid in $(find_port_pids | tr " " "\\n" | sed "/^$/d" | sort -u); do CMD=$(tr "\\0" " " < "/proc/$pid/cmdline" 2>/dev/null || ps -p "$pid" -o args= 2>/dev/null || true); COMM=$(cat "/proc/$pid/comm" 2>/dev/null || true); if echo "$COMM $CMD" | grep -qi "java"; then echo "$pid"; else echo "端口 ${portProbePort} 被非 Java 进程 PID $pid 占用，跳过查杀" >&2; fi; done; }; JAVA_PIDS=$(java_port_pids | tr " " "\\n" | sed "/^$/d" | sort -u | tr "\\n" " "); if [ -n "$JAVA_PIDS" ]; then echo "端口 ${portProbePort} 被 Java PID $JAVA_PIDS 占用，直接查杀"; kill $JAVA_PIDS 2>/dev/null || true; sleep 2; fi; JAVA_PIDS=$(java_port_pids | tr " " "\\n" | sed "/^$/d" | sort -u | tr "\\n" " "); if [ -n "$JAVA_PIDS" ]; then echo "端口 ${portProbePort} Java PID $JAVA_PIDS 仍存活，强制查杀"; kill -9 $JAVA_PIDS 2>/dev/null || true; sleep 1; fi; REMAINING=$(find_port_pids | tr " " "\\n" | sed "/^$/d" | sort -u | tr "\\n" " "); if [ -n "$REMAINING" ]; then echo "端口 ${portProbePort} 仍被 PID $REMAINING 占用，无法启动新服务"; exit 1; fi; else echo "未配置端口清理，跳过端口占用处理"; fi'
+
+const springBootStopCommand =
+  `PID_FILE="\${pidFile}"; if [ -f "$PID_FILE" ]; then PID=$(cat "$PID_FILE"); if [ -n "$PID" ]; then echo "====== 停止服务进程 PID=$PID"; kill -9 "$PID" 2>/dev/null || true; fi; rm -f "$PID_FILE"; fi; pkill -9 -f "\${remoteDeployPath}/\${remoteArtifactName}" 2>/dev/null || true; ${stopPortOwnerFragment}`
+
+const springBootStartCommand =
+  'mkdir -p "${logDir}" && cd "${serviceDir}" || exit 1; nohup "${javaBin}" ${jvmOptions} -jar "${remoteDeployPath}/${remoteArtifactName}" ${springProfile} ${extraArgs} > "${logFile}" 2>&1 & PID=$!; echo "$PID" > "${pidFile}"; echo "${logFile}" > "${logPathFile}"; sleep 1; if ! ps -p "$PID" > /dev/null 2>&1; then echo "服务进程启动后立即退出"; tail -n 80 "${logFile}" 2>/dev/null || true; exit 1; fi; echo "PID=$PID; LOG_FILE=${logFile}"'
+
 const createSpringBootJarSteps = (): DeployStep[] => {
   const steps: DeployStep[] = [
     createDeployStep('upload_file', 10, '上传 jar 包'),
@@ -258,11 +276,11 @@ const createSpringBootJarSteps = (): DeployStep[] => {
     createDeployStep('ssh_command', 60, '启动新服务'),
   ]
 
-  steps[1].config = {command: 'if [ -f "${remoteDeployPath}/${remoteArtifactName}" ]; then cp -f "${remoteDeployPath}/${remoteArtifactName}" "${remoteDeployPath}/${remoteArtifactName}.${date}"; fi', successExitCodes: [0]}
-  steps[2].config = {command: 'APP_NAME="${remoteArtifactName%.*}"; PID_FILE="${remoteDeployPath}/$APP_NAME.pid"; if [ -f "$PID_FILE" ]; then PID=$(cat "$PID_FILE"); kill "$PID" 2>/dev/null || true; rm -f "$PID_FILE"; fi; pkill -f "${remoteArtifactName}" || true', successExitCodes: [0]}
+  steps[1].config = {command: 'if [ -f "${remoteDeployPath}/${remoteArtifactName}" ]; then cp -f "${remoteDeployPath}/${remoteArtifactName}" "${remoteDeployPath}/${remoteArtifactName}.${timestamp}"; fi', successExitCodes: [0]}
+  steps[2].config = {command: springBootStopCommand, successExitCodes: [0]}
   steps[3].config = {waitSeconds: 3}
   steps[4].config = {command: 'mv -f "${remoteDeployPath}/.${artifactName}.uploading" "${remoteDeployPath}/${remoteArtifactName}"', successExitCodes: [0]}
-  steps[5].config = {command: 'APP_NAME="${remoteArtifactName%.*}"; LOG_DIR="${remoteDeployPath}/logs"; DEPLOY_LOG="$LOG_DIR/$APP_NAME-$(date +%Y%m%d%H%M%S).log"; mkdir -p "$LOG_DIR"; cd "${remoteDeployPath}" && nohup java -jar "${remoteDeployPath}/${remoteArtifactName}" > "$DEPLOY_LOG" 2>&1 & PID=$!; echo "$PID" > "${remoteDeployPath}/$APP_NAME.pid"; echo "$DEPLOY_LOG" > "${remoteDeployPath}/$APP_NAME.log.path"; echo "PID=$PID; LOG_FILE=$DEPLOY_LOG"', successExitCodes: [0]}
+  steps[5].config = {command: springBootStartCommand, successExitCodes: [0]}
   return steps
 }
 
@@ -276,10 +294,10 @@ const createTomcatWarSteps = (): DeployStep[] => {
     createDeployStep('http_check', 60, 'HTTP 验证'),
   ]
   steps[0].config = {localPath: '${artifactPath}', remotePath: '${remoteDeployPath}/.${artifactName}.uploading', overwrite: true}
-  steps[1].config = {command: 'if [ -x "${remoteDeployPath}/bin/shutdown.sh" ]; then "${remoteDeployPath}/bin/shutdown.sh" || true; fi', successExitCodes: [0]}
-  steps[2].config = {command: 'if [ -f "${remoteDeployPath}/webapps/${remoteArtifactName}" ]; then cp -f "${remoteDeployPath}/webapps/${remoteArtifactName}" "${remoteDeployPath}/webapps/${remoteArtifactName}.${date}"; fi', successExitCodes: [0]}
-  steps[3].config = {command: 'mv -f "${remoteDeployPath}/.${artifactName}.uploading" "${remoteDeployPath}/webapps/${remoteArtifactName}"', successExitCodes: [0]}
-  steps[4].config = {command: 'if [ -x "${remoteDeployPath}/bin/startup.sh" ]; then "${remoteDeployPath}/bin/startup.sh"; fi', successExitCodes: [0]}
+  steps[1].config = {command: `if [ ! -x "\${remoteDeployPath}/bin/shutdown.sh" ]; then echo "缺少 Tomcat shutdown.sh 或没有执行权限"; exit 1; fi; "\${remoteDeployPath}/bin/shutdown.sh" || true; sleep 5; ${stopPortOwnerFragment}`, successExitCodes: [0]}
+  steps[2].config = {command: 'if [ -f "${remoteDeployPath}/webapps/${remoteArtifactName}" ]; then cp -f "${remoteDeployPath}/webapps/${remoteArtifactName}" "${remoteDeployPath}/webapps/${remoteArtifactName}.${timestamp}"; fi', successExitCodes: [0]}
+  steps[3].config = {command: 'mkdir -p "${remoteDeployPath}/webapps" && mv -f "${remoteDeployPath}/.${artifactName}.uploading" "${remoteDeployPath}/webapps/${remoteArtifactName}"', successExitCodes: [0]}
+  steps[4].config = {command: 'if [ ! -x "${remoteDeployPath}/bin/startup.sh" ]; then echo "缺少 Tomcat startup.sh 或没有执行权限"; exit 1; fi; "${remoteDeployPath}/bin/startup.sh"', successExitCodes: [0]}
   steps[5].config = {url: 'http://127.0.0.1:8080/', method: 'GET', expectedStatusCodes: [200, 302], expectedBodyContains: '', checkIntervalSeconds: 5}
   return steps
 }
@@ -292,8 +310,8 @@ const createStaticFileSteps = (): DeployStep[] => {
     createDeployStep('http_check', 40, '站点验证'),
   ]
   steps[0].config = {localPath: '${artifactPath}', remotePath: '${remoteDeployPath}/.${artifactName}.uploading', overwrite: true}
-  steps[1].config = {command: 'if [ -d "${remoteDeployPath}/current" ]; then cp -a "${remoteDeployPath}/current" "${remoteDeployPath}/backup-${date}"; fi', successExitCodes: [0]}
-  steps[2].config = {command: 'rm -rf "${remoteDeployPath}/next" && mkdir -p "${remoteDeployPath}/next" && unzip -oq "${remoteDeployPath}/.${artifactName}.uploading" -d "${remoteDeployPath}/next" && rm -rf "${remoteDeployPath}/current" && mv "${remoteDeployPath}/next" "${remoteDeployPath}/current"', successExitCodes: [0]}
+  steps[1].config = {command: 'if [ -d "${remoteDeployPath}/current" ]; then cp -a "${remoteDeployPath}/current" "${remoteDeployPath}/backup-${timestamp}"; fi', successExitCodes: [0]}
+  steps[2].config = {command: 'test -n "${remoteDeployPath}" && test "${remoteDeployPath}" != "/" && rm -rf "${remoteDeployPath}/next" && mkdir -p "${remoteDeployPath}/next" && unzip -oq "${remoteDeployPath}/.${artifactName}.uploading" -d "${remoteDeployPath}/next" && rm -rf "${remoteDeployPath}/current" && mv "${remoteDeployPath}/next" "${remoteDeployPath}/current"', successExitCodes: [0]}
   steps[3].config = {url: 'http://127.0.0.1/', method: 'GET', expectedStatusCodes: [200], expectedBodyContains: '', checkIntervalSeconds: 5}
   return steps
 }
@@ -540,6 +558,7 @@ export function DeploymentCenterPanel() {
   const [templateDraft, setTemplateDraft] = useState<DeploymentTemplate>(createTemplateDraft())
   const [templateFormMode, setTemplateFormMode] = useState<FormMode>('create')
   const [selectedTemplateStepId, setSelectedTemplateStepId] = useState<string>()
+  const [activeDeploymentTab, setActiveDeploymentTab] = useState('overview')
   const deploymentPreselectProfileId = useNavigationStore((state) => state.deploymentPreselectProfileId)
   const clearDeploymentPreselect = useNavigationStore((state) => state.clearDeploymentPreselect)
 
@@ -856,6 +875,7 @@ export function DeploymentCenterPanel() {
       startupProbe: profile.startupProbe ?? createDefaultStartupProbe(),
     })
     setSelectedStepId(profile.deploymentSteps?.[0]?.id)
+    setActiveDeploymentTab('profile')
   }
 
   const newDeployment = () => {
@@ -1073,6 +1093,8 @@ export function DeploymentCenterPanel() {
       <Space direction="vertical" size={16} style={{width: '100%'}}>
         {error ? <Alert type="error" showIcon message={error} /> : null}
         <Tabs
+          activeKey={activeDeploymentTab}
+          onChange={setActiveDeploymentTab}
           items={[
             {
               key: 'overview',
@@ -1532,8 +1554,8 @@ export function DeploymentCenterPanel() {
                   </Card>
                   <Space wrap>
                     <Input
-                      addonBefore="日志路径"
-                      placeholder="留空使用默认路径"
+                      addonBefore="日志目录/文件"
+                      placeholder="填目录则自动生成日志名；填 .log 则作为完整文件"
                       style={{minWidth: 360}}
                       value={deploymentDraft.logPath ?? ''}
                       onChange={(event) => setDeploymentDraft((state) => ({...state, logPath: event.target.value || undefined}))}
@@ -2005,97 +2027,87 @@ export function DeploymentCenterPanel() {
                     <Table
                       rowKey="id"
                       size="small"
+                      className="service-dictionary-table"
                       dataSource={deploymentProfiles}
-                      scroll={{x: 1200}}
                       pagination={false}
                       columns={[
                         {
-                          title: '简称',
-                          dataIndex: 'serviceAlias',
-                          width: 60,
-                          render: (value: string) => value ? <Tag color="blue">{value}</Tag> : <Text type="secondary">-</Text>,
-                        },
-                        {
-                          title: '服务名称',
-                          dataIndex: 'name',
-                          width: 140,
-                          ellipsis: true,
-                        },
-                        {
-                          title: '描述',
-                          dataIndex: 'serviceDescription',
-                          width: 120,
-                          ellipsis: true,
-                          render: (value: string) => value || <Text type="secondary">-</Text>,
+                          title: '服务',
+                          width: 220,
+                          render: (_: unknown, record: DeploymentProfile) => (
+                            <Space direction="vertical" size={2} className="service-dictionary-cell">
+                              <Space size={6} wrap>
+                                {record.serviceAlias ? <Tag color="blue">{record.serviceAlias}</Tag> : null}
+                                <Text strong>{record.name || '未命名服务'}</Text>
+                              </Space>
+                              {record.serviceDescription ? (
+                                <Text type="secondary">{record.serviceDescription}</Text>
+                              ) : (
+                                <Text type="secondary">未填写服务描述</Text>
+                              )}
+                            </Space>
+                          ),
                         },
                         {
                           title: '模块',
                           dataIndex: 'moduleId',
-                          width: 120,
-                          ellipsis: true,
+                          width: 160,
                           render: (value: string) => {
                             const mod = moduleById.get(value)
-                            return mod ? mod.artifactId : <Text type="secondary">未绑定</Text>
+                            return mod ? (
+                              <Space direction="vertical" size={2} className="service-dictionary-cell">
+                                <Text>{mod.artifactId}</Text>
+                                {mod.relativePath ? <Text type="secondary">{mod.relativePath}</Text> : null}
+                              </Space>
+                            ) : <Text type="secondary">未绑定</Text>
                           },
                         },
                         {
-                          title: 'Jar 名称',
-                          width: 140,
-                          ellipsis: true,
-                          render: (_: unknown, record: DeploymentProfile) => record.remoteArtifactName || record.localArtifactPattern,
-                        },
-                        {
-                          title: '远端目录',
-                          dataIndex: 'remoteDeployPath',
-                          width: 160,
-                          ellipsis: true,
-                        },
-                        {
-                          title: '日志路径',
-                          dataIndex: 'logPath',
-                          width: 180,
-                          ellipsis: true,
-                          render: (value: string) => value || <Text type="secondary">自动</Text>,
-                        },
-                        {
-                          title: 'PID',
-                          width: 80,
+                          title: '产物与路径',
+                          width: 300,
                           render: (_: unknown, record: DeploymentProfile) => {
-                            const baseName = (record.remoteArtifactName || record.localArtifactPattern).replace(/\.[^.]+$/, '')
-                            return <Text code style={{fontSize: 11}}>{baseName}.pid</Text>
+                            const artifactName = record.remoteArtifactName || record.localArtifactPattern
+                            const baseName = artifactName.replace(/\.[^.]+$/, '')
+                            return (
+                              <Space direction="vertical" size={2} className="service-dictionary-cell">
+                                <Text code>{artifactName}</Text>
+                                <Text type="secondary">{record.remoteDeployPath || '未配置远端目录'}</Text>
+                                <Text type="secondary">日志：{record.logPath || '自动'}</Text>
+                                <Text type="secondary">PID：{baseName}.pid</Text>
+                              </Space>
+                            )
                           },
                         },
                         {
-                          title: '端口',
-                          width: 70,
+                          title: '探针',
+                          width: 180,
                           render: (_: unknown, record: DeploymentProfile) => {
                             const port = record.startupProbe?.portProbe?.enabled ? record.startupProbe.portProbe.port : undefined
-                            return port ? <Tag>{port}</Tag> : <Text type="secondary">-</Text>
-                          },
-                        },
-                        {
-                          title: '健康检查',
-                          width: 120,
-                          ellipsis: true,
-                          render: (_: unknown, record: DeploymentProfile) => {
                             const url = record.startupProbe?.httpProbe?.enabled ? record.startupProbe.httpProbe.url : undefined
-                            return url ? <Text code style={{fontSize: 11}}>{url}</Text> : <Text type="secondary">-</Text>
+                            return (
+                              <Space direction="vertical" size={4} className="service-dictionary-cell">
+                                <Space size={6} wrap>
+                                  {record.startupProbe?.processProbe?.enabled ? <Tag>进程</Tag> : null}
+                                  {port ? <Tag>{port}</Tag> : null}
+                                  {record.startupProbe?.logProbe?.enabled ? <Tag>日志</Tag> : null}
+                                </Space>
+                                {url ? <Text code>{url}</Text> : <Text type="secondary">未配置 HTTP 健康检查</Text>}
+                              </Space>
+                            )
                           },
                         },
                         {
                           title: '操作',
-                          width: 80,
+                          width: 92,
                           render: (_: unknown, record: DeploymentProfile) => (
                             <Tooltip title="编辑此映射">
                               <Button
                                 size="small"
-                                type="text"
                                 icon={<EditOutlined />}
-                                onClick={() => {
-                                  setDeploymentDraft({...record})
-                                  setDeploymentFormMode('edit')
-                                }}
-                              />
+                                onClick={() => openDeployment(record)}
+                              >
+                                编辑
+                              </Button>
                             </Tooltip>
                           ),
                         },
@@ -2471,7 +2483,7 @@ export function DeploymentCenterPanel() {
         <Modal
           title={pipelineEditorTarget === 'template' ? '模板流程配置' : '部署流程配置'}
           open={pipelineEditorOpen}
-          width={1040}
+          width="min(1040px, calc(100vw - 64px))"
           okText="完成"
           cancelText="关闭"
           onOk={() => setPipelineEditorOpen(false)}

@@ -75,6 +75,7 @@ struct DeploymentContext {
     log_name: Option<String>,
     log_encoding: String,
     enable_deploy_log: bool,
+    port_probe_port: Option<u16>,
     backup_config: BackupConfig,
 }
 
@@ -164,6 +165,91 @@ pub fn start_deployment(app: AppHandle, payload: StartDeploymentPayload) -> AppR
     Ok(task_id)
 }
 
+fn non_empty_option(value: Option<String>) -> Option<String> {
+    value.and_then(|item| {
+        let trimmed = item.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    })
+}
+
+fn deployment_port(profile: &DeploymentProfile) -> Option<u16> {
+    profile
+        .startup_probe
+        .as_ref()
+        .and_then(|config| config.port_probe.as_ref())
+        .map(|probe| probe.port)
+        .or_else(|| {
+            profile
+                .startup_probe
+                .as_ref()
+                .and_then(|config| config.http_probe.as_ref())
+                .and_then(|probe| parse_url_port(probe.url.as_deref()))
+        })
+        .or_else(|| parse_port_from_steps(&profile.deployment_steps))
+        .or_else(|| {
+            profile
+                .custom_commands
+                .iter()
+                .filter(|command| command.enabled)
+                .find_map(|command| {
+                    parse_server_port(Some(&command.command))
+                        .or_else(|| parse_url_port(Some(&command.command)))
+                })
+        })
+        .or_else(|| parse_server_port(profile.jvm_options.as_deref()))
+        .or_else(|| parse_server_port(profile.extra_args.as_deref()))
+}
+
+fn parse_port_from_steps(steps: &[DeployStep]) -> Option<u16> {
+    steps.iter().filter(|step| step.enabled).find_map(|step| {
+        step.config
+            .get("port")
+            .and_then(|value| value.as_u64())
+            .and_then(|port| u16::try_from(port).ok())
+            .or_else(|| {
+                step.config
+                    .get("url")
+                    .and_then(|value| value.as_str())
+                    .and_then(|url| parse_url_port(Some(url)))
+            })
+            .or_else(|| {
+                step.config
+                    .get("command")
+                    .and_then(|value| value.as_str())
+                    .and_then(|command| parse_server_port(Some(command)))
+            })
+    })
+}
+
+fn parse_server_port(value: Option<&str>) -> Option<u16> {
+    let value = value?;
+    value
+        .split_whitespace()
+        .filter_map(|token| {
+            let token = token.trim_matches(|ch| ch == '"' || ch == '\'');
+            ["--server.port=", "-Dserver.port=", "server.port="]
+                .iter()
+                .find_map(|prefix| token.strip_prefix(prefix))
+                .and_then(|port| port.parse::<u16>().ok())
+        })
+        .next()
+}
+
+fn parse_url_port(value: Option<&str>) -> Option<u16> {
+    let value = value?.trim();
+    let after_scheme = value
+        .split_once("://")
+        .map(|(_, rest)| rest)
+        .unwrap_or(value);
+    let host_port = after_scheme.split('/').next().unwrap_or(after_scheme);
+    let port = host_port.rsplit_once(':')?.1;
+    port.parse::<u16>().ok()
+}
+
 pub fn cancel_deployment(app: AppHandle, task_id: String) -> AppResult<()> {
     app.state::<DeploymentControlState>()
         .request_cancel(&task_id)?;
@@ -185,6 +271,13 @@ fn execute_deployment(
 ) -> AppResult<DeploymentTask> {
     let profile = deployment_repo::get_deployment_profile(app, &payload.deployment_profile_id)?;
     let server = deployment_repo::get_server_profile_for_execution(app, &payload.server_id)?;
+    let remote_deploy_path = profile.remote_deploy_path.trim();
+    if remote_deploy_path.is_empty() {
+        return Err(to_user_error("远端部署目录不能为空。"));
+    }
+    if remote_deploy_path == "/" {
+        return Err(to_user_error("远端部署目录不能为根目录 /。"));
+    }
     let artifact_path = Path::new(&payload.local_artifact_path);
     if !artifact_path.exists() {
         return Err(to_user_error("所选构建产物不存在。"));
@@ -218,16 +311,17 @@ fn execute_deployment(
         remote_deploy_path: normalize_remote_dir(&profile.remote_deploy_path),
         _service_description: profile.service_description.clone(),
         _service_alias: profile.service_alias.clone(),
-        java_bin_path: profile.java_bin_path.clone(),
-        jvm_options: profile.jvm_options.clone(),
-        spring_profile: profile.spring_profile.clone(),
-        extra_args: profile.extra_args.clone(),
-        working_dir: profile.working_dir.clone(),
+        java_bin_path: non_empty_option(profile.java_bin_path.clone()),
+        jvm_options: non_empty_option(profile.jvm_options.clone()),
+        spring_profile: non_empty_option(profile.spring_profile.clone()),
+        extra_args: non_empty_option(profile.extra_args.clone()),
+        working_dir: non_empty_option(profile.working_dir.clone()),
         log_path,
         log_naming_mode,
         log_name,
         log_encoding: profile.log_encoding.clone(),
         enable_deploy_log: profile.enable_deploy_log,
+        port_probe_port: deployment_port(&profile),
         backup_config: profile.backup_config.clone(),
     };
     let steps = normalized_steps(&profile, &context);
@@ -273,33 +367,6 @@ fn execute_deployment(
             return Ok(task);
         }
     };
-
-    if context.enable_deploy_log {
-        let log_file_for_offset = context.log_path.as_deref().unwrap_or("");
-        if !log_file_for_offset.is_empty() {
-            let offset_cmd = format!(
-                "if [ -f {} ]; then wc -c < {}; else echo 0; fi",
-                shell_quote(log_file_for_offset),
-                shell_quote(log_file_for_offset),
-            );
-            match conn.execute_with_cancel(&offset_cmd, || is_cancel_requested(app, task_id)) {
-                Ok(result) => {
-                    let offset: u64 = result.output.trim().parse().unwrap_or(0);
-                    task.log_offset_before_start = Some(offset);
-                    append_log(
-                        app,
-                        &mut task,
-                        None,
-                        format!("记录日志偏移量：{} bytes", offset),
-                    );
-                }
-                Err(e) => {
-                    append_log(app, &mut task, None, format!("记录日志偏移量失败：{}", e));
-                }
-            }
-            emit_task_update(app, &task);
-        }
-    }
 
     for step in steps.iter().filter(|step| step.enabled) {
         if finish_if_cancelled(app, &mut task, &step.id) {
@@ -692,7 +759,9 @@ fn execute_ssh_step(
     task_id: &str,
 ) -> AppResult<String> {
     let config: SshCommandConfig = parse_config(step)?;
-    let mut command = expand_tokens(&config.command, context);
+    let run_post_stop_cleanup = is_stop_process_step(&step.name, &config.command);
+    let command_template = normalize_legacy_builtin_command(&step.name, &config.command);
+    let mut command = expand_tokens(&command_template, context);
     if let Some(timeout) = step.timeout_seconds.filter(|value| *value > 0) {
         command = format!("timeout {} sh -lc {}", timeout, shell_quote(&command));
     }
@@ -701,11 +770,115 @@ fn execute_ssh_step(
         config.success_exit_codes.as_deref().unwrap_or(&[0]),
         || is_cancel_requested(app, task_id),
     )?;
-    Ok(if result.output.is_empty() {
-        format!("{} 执行完成，退出码 {}", step.name, result.exit_status)
+    let exit_status = result.exit_status;
+    let mut output = result.output;
+    if run_post_stop_cleanup {
+        let cleanup_template = stop_port_owner_fragment("${portProbePort}");
+        let cleanup_command = expand_tokens(&cleanup_template, context);
+        match conn.execute_with_cancel(&cleanup_command, || is_cancel_requested(app, task_id)) {
+            Ok(cleanup_result) => {
+                if !cleanup_result.output.trim().is_empty() {
+                    if !output.is_empty() {
+                        output.push('\n');
+                    }
+                    output.push_str(cleanup_result.output.trim());
+                }
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(if output.is_empty() {
+        format!("{} 执行完成，退出码 {}", step.name, exit_status)
     } else {
-        format!("{} 输出：{}", step.name, result.output)
+        format!("{} 输出：{}", step.name, output)
     })
+}
+
+fn is_stop_process_step(step_name: &str, command: &str) -> bool {
+    let lower_name = step_name.to_ascii_lowercase();
+    let looks_like_stop_step = step_name.contains("停止")
+        || step_name.contains("停服")
+        || lower_name.contains("stop")
+        || lower_name.contains("shutdown");
+    let touches_pid_or_process = command.contains("${pidFile}")
+        || command.contains(".pid")
+        || command.contains("PID_FILE")
+        || command.contains("pkill")
+        || command.contains("kill");
+    looks_like_stop_step && touches_pid_or_process
+}
+
+fn normalize_legacy_builtin_command(step_name: &str, command: &str) -> String {
+    if command.contains("APP_NAME=\"${remoteArtifactName%.*}\"")
+        && command.contains("DEPLOY_LOG=\"$LOG_DIR/$APP_NAME-$(date +%Y%m%d%H%M%S).log\"")
+        && command.contains("nohup java -jar")
+    {
+        return standard_start_command();
+    }
+
+    if command.contains("APP_NAME=\"${remoteArtifactName%.*}\"")
+        && command.contains("PID_FILE=\"${remoteDeployPath}/$APP_NAME.pid\"")
+        && command.contains("pkill -f \"${remoteArtifactName}\"")
+    {
+        return standard_stop_command();
+    }
+
+    if command.contains("PID_FILE=\"${pidFile}\"")
+        && command.contains("pkill -f")
+        && (command.contains("${remoteArtifactName}")
+            || command.contains("${remoteDeployPath}/${remoteArtifactName}"))
+        && !command.contains("find_port_pids")
+    {
+        return standard_stop_command();
+    }
+
+    if command.contains("PID_FILE=\"${pidFile}\"")
+        && command.contains("find_port_pids")
+        && !command.contains("端口清理检查")
+    {
+        return standard_stop_command();
+    }
+
+    if is_stop_process_step(step_name, command) && !command.contains("端口 Java 进程清理") {
+        return standard_stop_command();
+    }
+
+    command.to_string()
+}
+
+fn standard_stop_command() -> String {
+    stop_service_command(
+        "\"${pidFile}\"",
+        "\"${remoteDeployPath}/${remoteArtifactName}\"",
+        &stop_port_owner_fragment("${portProbePort}"),
+    )
+}
+
+fn standard_start_command() -> String {
+    "mkdir -p \"${logDir}\" && cd \"${serviceDir}\" || exit 1; nohup \"${javaBin}\" ${jvmOptions} -jar \"${remoteDeployPath}/${remoteArtifactName}\" ${springProfile} ${extraArgs} > \"${logFile}\" 2>&1 & PID=$!; echo \"$PID\" > \"${pidFile}\"; echo \"${logFile}\" > \"${logPathFile}\"; sleep 1; if ! ps -p \"$PID\" > /dev/null 2>&1; then echo \"服务进程启动后立即退出\"; tail -n 80 \"${logFile}\" 2>/dev/null || true; exit 1; fi; echo \"PID=$PID; LOG_FILE=${logFile}\"".to_string()
+}
+
+fn stop_port_check_fragment(port: Option<u16>) -> String {
+    let Some(port) = port else {
+        return String::new();
+    };
+    stop_port_owner_fragment(&port.to_string())
+}
+
+fn stop_service_command(pid_file: &str, artifact_pattern: &str, port_fragment: &str) -> String {
+    format!(
+        "PID_FILE={pid_file}; if [ -f \"$PID_FILE\" ]; then PID=$(cat \"$PID_FILE\"); if [ -n \"$PID\" ]; then echo \"====== 停止服务进程 PID=$PID\"; kill -9 \"$PID\" 2>/dev/null || true; fi; rm -f \"$PID_FILE\"; fi; pkill -9 -f {artifact_pattern} 2>/dev/null || true; {port_fragment}",
+        pid_file = pid_file,
+        artifact_pattern = artifact_pattern,
+        port_fragment = port_fragment,
+    )
+}
+
+fn stop_port_owner_fragment(port: &str) -> String {
+    format!(
+        "DEPLOY_PORT=\"{port}\"; if [ -z \"$DEPLOY_PORT\" ]; then LOG_FILE=\"\"; if [ -f \"${{logPathFile}}\" ]; then LOG_FILE=$(cat \"${{logPathFile}}\" 2>/dev/null || true); fi; if [ -z \"$LOG_FILE\" ]; then LOG_FILE=\"${{logFile}}\"; fi; if [ -f \"$LOG_FILE\" ]; then DEPLOY_PORT=$(grep -Eo 'port\\(s\\): [0-9]+|Port [0-9]+|server.port[ =:]+[0-9]+' \"$LOG_FILE\" 2>/dev/null | grep -Eo '[0-9]+' | tail -n 1); fi; fi; if [ -n \"$DEPLOY_PORT\" ]; then echo \"端口 Java 进程清理：$DEPLOY_PORT\"; find_port_pids() {{ if command -v lsof >/dev/null 2>&1; then lsof -nP -t -iTCP:$DEPLOY_PORT -sTCP:LISTEN 2>/dev/null; elif command -v ss >/dev/null 2>&1; then ss -ltnp 2>/dev/null | awk -v p=\":$DEPLOY_PORT\" '$4 ~ p\"$\" {{print}}' | grep -o 'pid=[0-9]*' | cut -d= -f2; elif command -v fuser >/dev/null 2>&1; then fuser -n tcp \"$DEPLOY_PORT\" 2>/dev/null; else PORT_HEX=$(printf '%04X' \"$DEPLOY_PORT\"); INODES=$(awk -v p=\":$PORT_HEX\" '$4==\"0A\" && toupper($2) ~ p\"$\" {{gsub(/\\r/,\"\",$10); print $10}}' /proc/net/tcp /proc/net/tcp6 2>/dev/null | sort -u); for inode in $INODES; do for fd in /proc/[0-9]*/fd/*; do link=$(readlink \"$fd\" 2>/dev/null || true); if [ \"$link\" = \"socket:[$inode]\" ]; then pid=${{fd#/proc/}}; echo \"${{pid%%/*}}\"; fi; done; done; fi; }}; java_port_pids() {{ for pid in $(find_port_pids | tr ' ' '\\n' | sed '/^$/d' | sort -u); do CMD=$(tr '\\0' ' ' < \"/proc/$pid/cmdline\" 2>/dev/null || ps -p \"$pid\" -o args= 2>/dev/null || true); COMM=$(cat \"/proc/$pid/comm\" 2>/dev/null || true); if echo \"$COMM $CMD\" | grep -qi 'java'; then echo \"$pid\"; else echo \"端口 $DEPLOY_PORT 被非 Java 进程 PID $pid 占用，跳过查杀\" >&2; fi; done; }}; JAVA_PIDS=$(java_port_pids | tr ' ' '\\n' | sed '/^$/d' | sort -u | tr '\\n' ' '); if [ -n \"$JAVA_PIDS\" ]; then echo \"端口 $DEPLOY_PORT 被 Java PID $JAVA_PIDS 占用，直接查杀\"; kill $JAVA_PIDS 2>/dev/null || true; sleep 2; fi; JAVA_PIDS=$(java_port_pids | tr ' ' '\\n' | sed '/^$/d' | sort -u | tr '\\n' ' '); if [ -n \"$JAVA_PIDS\" ]; then echo \"端口 $DEPLOY_PORT Java PID $JAVA_PIDS 仍存活，强制查杀\"; kill -9 $JAVA_PIDS 2>/dev/null || true; sleep 1; fi; REMAINING=$(find_port_pids | tr ' ' '\\n' | sed '/^$/d' | sort -u | tr '\\n' ' '); if [ -n \"$REMAINING\" ]; then echo \"端口 $DEPLOY_PORT 仍被 PID $REMAINING 占用，无法启动新服务\"; exit 1; fi; else echo \"未解析到部署端口，跳过端口占用处理\"; fi",
+        port = port
+    )
 }
 
 fn execute_wait_step(
@@ -1074,15 +1247,13 @@ fn legacy_steps_from_custom_commands(
         .map(|(n, _)| n)
         .unwrap_or(&context.remote_artifact_name);
     let pid_file = format!("{}/{}.pid", context.remote_deploy_path, base_name);
-    let log_dir = format!("{}/logs", context.remote_deploy_path);
-    let default_log_file = match context.log_naming_mode.as_str() {
-        "fixed" => {
-            let name = context.log_name.as_deref().unwrap_or(base_name);
-            format!("{}/{}.log", log_dir, name)
-        }
-        _ => format!("{}/{}-$(date +%Y%m%d).log", log_dir, base_name),
-    };
-    let log_file = context.log_path.as_deref().unwrap_or(&default_log_file);
+    let today = chrono::Local::now().format("%Y%m%d").to_string();
+    let timestamp = chrono::Local::now().format("%Y%m%d%H%M%S").to_string();
+    let log_file = resolve_log_file(context, base_name, &today, &timestamp);
+    let log_dir = log_file
+        .rsplit_once('/')
+        .map(|(dir, _)| dir.to_string())
+        .unwrap_or_else(|| format!("{}/logs", context.remote_deploy_path));
     let log_path_file = format!("{}/{}.log.path", context.remote_deploy_path, base_name);
     let java_bin = context.java_bin_path.as_deref().unwrap_or("java");
     let jvm_opts = context.jvm_options.as_deref().unwrap_or("");
@@ -1100,7 +1271,7 @@ fn legacy_steps_from_custom_commands(
         .unwrap_or(&context.remote_deploy_path);
     let start_command = if context.enable_deploy_log {
         format!(
-            "mkdir -p {log_dir} && cd {app_dir} && nohup {java_bin} {jvm_opts} -jar {jar_path}{profile_arg}{extra} > {log_file} 2>&1 & echo $! > {pid_file} && echo {log_file_var} > {log_path_file} && echo PID=$(cat {pid_file}) && echo LOG_FILE=$(cat {log_path_file})",
+            "mkdir -p {log_dir} && cd {app_dir} || exit 1; nohup {java_bin} {jvm_opts} -jar {jar_path}{profile_arg}{extra} > {log_file} 2>&1 & PID=$!; echo \"$PID\" > {pid_file} && echo {log_file_var} > {log_path_file}; sleep 1; if ! ps -p \"$PID\" > /dev/null 2>&1; then echo \"服务进程启动后立即退出\"; tail -n 80 {log_file} 2>/dev/null || true; exit 1; fi; echo PID=$(cat {pid_file}) && echo LOG_FILE=$(cat {log_path_file})",
             log_dir = shell_quote(&log_dir),
             app_dir = shell_quote(service_dir),
             java_bin = shell_quote(java_bin),
@@ -1108,14 +1279,14 @@ fn legacy_steps_from_custom_commands(
             jar_path = shell_quote(&target_path),
             profile_arg = profile_arg,
             extra = extra,
-            log_file = shell_quote(log_file),
+            log_file = shell_quote(&log_file),
             pid_file = shell_quote(&pid_file),
-            log_file_var = shell_quote(log_file),
+            log_file_var = shell_quote(&log_file),
             log_path_file = shell_quote(&log_path_file),
         )
     } else {
         format!(
-            "cd {app_dir} && nohup {java_bin} {jvm_opts} -jar {jar_path}{profile_arg}{extra} > /dev/null 2>&1 & echo $! > {pid_file} && echo PID=$(cat {pid_file})",
+            "cd {app_dir} || exit 1; nohup {java_bin} {jvm_opts} -jar {jar_path}{profile_arg}{extra} > /dev/null 2>&1 & PID=$!; echo \"$PID\" > {pid_file}; sleep 1; if ! ps -p \"$PID\" > /dev/null 2>&1; then echo \"服务进程启动后立即退出\"; exit 1; fi; echo PID=$(cat {pid_file})",
             app_dir = shell_quote(service_dir),
             java_bin = shell_quote(java_bin),
             jvm_opts = jvm_opts,
@@ -1125,10 +1296,10 @@ fn legacy_steps_from_custom_commands(
             pid_file = shell_quote(&pid_file),
         )
     };
-    let stop_command = format!(
-        "PID_FILE={pid_file}; if [ -f \"$PID_FILE\" ]; then PID=$(cat \"$PID_FILE\"); if ps -p \"$PID\" > /dev/null 2>&1; then kill \"$PID\"; sleep 3; if ps -p \"$PID\" > /dev/null 2>&1; then kill -9 \"$PID\"; fi; fi; rm -f \"$PID_FILE\"; else pkill -f {artifact} || true; fi",
-        pid_file = shell_quote(&pid_file),
-        artifact = shell_quote(&context.remote_artifact_name),
+    let stop_command = stop_service_command(
+        &shell_quote(&pid_file),
+        &shell_quote(&target_path),
+        &stop_port_check_fragment(context.port_probe_port),
     );
     let backup_dir = context
         .backup_config
@@ -1455,10 +1626,10 @@ fn execute_rollback(
 
     append_log(app, task, None, "=== 开始回滚 ===".to_string());
 
-    let stop_cmd = format!(
-        "PID_FILE={pid_file}; if [ -f \"$PID_FILE\" ]; then PID=$(cat \"$PID_FILE\"); if ps -p \"$PID\" > /dev/null 2>&1; then kill \"$PID\"; sleep 3; if ps -p \"$PID\" > /dev/null 2>&1; then kill -9 \"$PID\"; fi; fi; rm -f \"$PID_FILE\"; else pkill -f {artifact} || true; fi",
-        pid_file = shell_quote(&pid_file),
-        artifact = shell_quote(&context.remote_artifact_name),
+    let stop_cmd = stop_service_command(
+        &shell_quote(&pid_file),
+        &shell_quote(&target_path),
+        &stop_port_check_fragment(context.port_probe_port),
     );
     match conn.execute_with_cancel(&stop_cmd, || false) {
         Ok(_) => append_log(app, task, None, "回滚：已停止新版本服务".to_string()),
@@ -1515,7 +1686,7 @@ fn execute_rollback(
     if context.backup_config.restart_after_rollback && rollback.success == Some(true) {
         let log_dir = format!("{}/logs", context.remote_deploy_path);
         let log_file = format!(
-            "{}/{}-rollback-$(date +%Y%m%d).log",
+            "{}/{}-rollback-$(date +%Y%m%d%H%M%S).log",
             log_dir, base_name
         );
         let log_path_file = format!("{}/{}.log.path", context.remote_deploy_path, base_name);
@@ -1534,7 +1705,8 @@ fn execute_rollback(
             .as_deref()
             .unwrap_or(&context.remote_deploy_path);
         let restart_cmd = format!(
-            "cd {app_dir} && nohup {java_bin} {jvm_opts} -jar {jar_path}{profile_arg}{extra} > {log_file} 2>&1 & echo $! > {pid_file} && echo {log_file_var} > {log_path_file}",
+            "mkdir -p {log_dir} && cd {app_dir} || exit 1; nohup {java_bin} {jvm_opts} -jar {jar_path}{profile_arg}{extra} > {log_file} 2>&1 & PID=$!; echo \"$PID\" > {pid_file} && echo {log_file_var} > {log_path_file}; sleep 1; if ! ps -p \"$PID\" > /dev/null 2>&1; then echo \"回滚服务进程启动后立即退出\"; tail -n 80 {log_file} 2>/dev/null || true; exit 1; fi",
+            log_dir = shell_quote(&log_dir),
             app_dir = shell_quote(service_dir),
             java_bin = shell_quote(java_bin),
             jvm_opts = jvm_opts,
@@ -1635,22 +1807,6 @@ fn expand_tokens(value: &str, context: &DeploymentContext) -> String {
     let now = chrono::Local::now();
     let today = now.format("%Y%m%d").to_string();
     let timestamp = now.format("%Y%m%d%H%M%S").to_string();
-    let log_name_resolved = match context.log_naming_mode.as_str() {
-        "fixed" => context
-            .log_name
-            .as_deref()
-            .unwrap_or(&context.remote_artifact_name)
-            .to_string(),
-        _ => format!(
-            "{}-{}",
-            context
-                .remote_artifact_name
-                .rsplit_once('.')
-                .map(|(n, _)| n)
-                .unwrap_or(&context.remote_artifact_name),
-            today
-        ),
-    };
     let java_bin = context.java_bin_path.as_deref().unwrap_or("java");
     let jvm_opts = context.jvm_options.as_deref().unwrap_or("");
     let profile_arg = match &context.spring_profile {
@@ -1667,21 +1823,109 @@ fn expand_tokens(value: &str, context: &DeploymentContext) -> String {
         .rsplit_once('.')
         .map(|(n, _)| n)
         .unwrap_or(&context.remote_artifact_name);
+    let log_name_resolved = resolve_log_name(context, base_name, &today);
+    let log_file = resolve_log_file(context, base_name, &today, &timestamp);
+    let log_dir = log_file
+        .rsplit_once('/')
+        .map(|(dir, _)| dir)
+        .unwrap_or(&context.remote_deploy_path)
+        .to_string();
     let pid_file = format!("{}/{}.pid", context.remote_deploy_path, base_name);
+    let log_path_file = format!("{}/{}.log.path", context.remote_deploy_path, base_name);
+    let port_probe_port = context
+        .port_probe_port
+        .map(|port| port.to_string())
+        .unwrap_or_default();
     value
+        .replace("${remoteArtifactName%.*}", base_name)
+        .replace("${artifactName%.*}", artifact_base_name(context))
         .replace("${artifactPath}", &context.artifact_path)
         .replace("${artifactName}", &context.artifact_name)
         .replace("${remoteArtifactName}", &context.remote_artifact_name)
+        .replace("${remoteArtifactBaseName}", base_name)
         .replace("${remoteDeployPath}", &context.remote_deploy_path)
         .replace("${date}", &today)
         .replace("${timestamp}", &timestamp)
         .replace("${logName}", &log_name_resolved)
+        .replace("${logFile}", &log_file)
+        .replace("${logDir}", &log_dir)
+        .replace("${logPathFile}", &log_path_file)
         .replace("${javaBin}", java_bin)
         .replace("${jvmOptions}", jvm_opts)
         .replace("${springProfile}", &profile_arg)
         .replace("${extraArgs}", extra)
         .replace("${serviceDir}", service_dir)
         .replace("${pidFile}", &pid_file)
+        .replace("${portProbePort}", &port_probe_port)
+}
+
+fn artifact_base_name(context: &DeploymentContext) -> &str {
+    context
+        .artifact_name
+        .rsplit_once('.')
+        .map(|(n, _)| n)
+        .unwrap_or(&context.artifact_name)
+}
+
+fn resolve_log_name(context: &DeploymentContext, base_name: &str, today: &str) -> String {
+    match context.log_naming_mode.as_str() {
+        "fixed" => context
+            .log_name
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or(base_name)
+            .to_string(),
+        _ => format!("{}-{}", base_name, today),
+    }
+}
+
+fn resolve_log_file(
+    context: &DeploymentContext,
+    base_name: &str,
+    today: &str,
+    timestamp: &str,
+) -> String {
+    if let Some(custom) = context
+        .log_path
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        let resolved = custom
+            .replace("${remoteDeployPath}", &context.remote_deploy_path)
+            .replace("${artifactName}", &context.artifact_name)
+            .replace("${artifactName%.*}", artifact_base_name(context))
+            .replace("${remoteArtifactName}", &context.remote_artifact_name)
+            .replace("${remoteArtifactName%.*}", base_name)
+            .replace("${remoteArtifactBaseName}", base_name)
+            .replace("${date}", today)
+            .replace("${timestamp}", timestamp)
+            .replace("${logName}", &resolve_log_name(context, base_name, today));
+
+        if is_explicit_log_file(&resolved) {
+            return resolved;
+        }
+
+        return format!(
+            "{}/{}.log",
+            resolved.trim_end_matches('/'),
+            resolve_log_name(context, base_name, today)
+        );
+    }
+
+    format!(
+        "{}/logs/{}.log",
+        context.remote_deploy_path,
+        resolve_log_name(context, base_name, today)
+    )
+}
+
+fn is_explicit_log_file(path: &str) -> bool {
+    path.trim_end()
+        .rsplit_once('/')
+        .map(|(_, name)| name)
+        .unwrap_or(path)
+        .to_ascii_lowercase()
+        .ends_with(".log")
 }
 
 fn normalize_remote_dir(value: &str) -> String {

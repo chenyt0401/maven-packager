@@ -1,5 +1,5 @@
 import {CopyOutlined, DeleteOutlined, FolderOpenOutlined, RocketOutlined} from '@ant-design/icons'
-import {Button, Empty, List, Popconfirm, Space, Tag, Tooltip, Typography} from 'antd'
+import {App, Button, Empty, List, Popconfirm, Space, Tag, Tooltip, Typography} from 'antd'
 import {api} from '../services/tauri-api'
 import {useAppStore} from '../store/useAppStore'
 import {useNavigationStore} from '../store/navigationStore'
@@ -29,6 +29,7 @@ const dedupeArtifacts = (artifacts: BuildArtifact[]) => {
 }
 
 export function ArtifactPage() {
+  const {message} = App.useApp()
   const artifacts = useAppStore((state) => state.artifacts)
   const history = useAppStore((state) => state.history)
   const setActivePage = useNavigationStore((state) => state.setActivePage)
@@ -37,6 +38,21 @@ export function ArtifactPage() {
     ...artifacts,
     ...history.flatMap((record) => record.artifacts ?? []),
   ])
+  const openArtifactLocation = async (artifact: BuildArtifact) => {
+    try {
+      await api.openPathInExplorer(artifact.path)
+    } catch (error) {
+      void message.error(error instanceof Error ? error.message : String(error))
+    }
+  }
+  const deleteArtifact = async (artifact: BuildArtifact) => {
+    try {
+      await removeArtifact(artifact.path)
+      void message.success(`已清理 ${artifact.fileName}`)
+    } catch (error) {
+      void message.error(error instanceof Error ? error.message : String(error))
+    }
+  }
 
   return (
     <main className="workspace-page">
@@ -70,7 +86,7 @@ export function ArtifactPage() {
                     size="small"
                     type="text"
                     icon={<FolderOpenOutlined />}
-                    onClick={() => void api.openPathInExplorer(artifact.path)}
+                    onClick={() => void openArtifactLocation(artifact)}
                   />
                 </Tooltip>,
                 <Popconfirm
@@ -80,7 +96,7 @@ export function ArtifactPage() {
                   okText="删除"
                   okType="danger"
                   cancelText="取消"
-                  onConfirm={() => void removeArtifact(artifact.path)}
+                  onConfirm={() => void deleteArtifact(artifact)}
                 >
                   <Tooltip title="删除">
                     <Button

@@ -14,20 +14,24 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 pub fn open_path_in_explorer(app: AppHandle, path: String) -> AppResult<()> {
     app_logger::log_info(&app, "filesystem.open.start", format!("path={}", path));
     let target = PathBuf::from(&path);
-    if !target.exists() {
-        app_logger::log_error(
-            &app,
-            "filesystem.open.failed",
-            format!("path={}, error=路径不存在", path),
-        );
-        return Err(to_user_error(format!("路径不存在：{}", path)));
-    }
+    let existing_target = if target.exists() {
+        target.clone()
+    } else {
+        nearest_existing_parent(&target).ok_or_else(|| {
+            app_logger::log_error(
+                &app,
+                "filesystem.open.failed",
+                format!("path={}, error=路径不存在且没有可打开的上级目录", path),
+            );
+            to_user_error(format!("路径不存在：{}", path))
+        })?
+    };
 
     let mut command = Command::new("explorer");
-    if target.is_file() {
+    if target.exists() && target.is_file() {
         command.arg("/select,").arg(target);
     } else {
-        command.arg(target);
+        command.arg(existing_target);
     }
     let result = command
         .creation_flags(CREATE_NO_WINDOW)
@@ -225,12 +229,12 @@ pub fn delete_build_artifact(app: AppHandle, path: String) -> AppResult<()> {
     );
     let target = PathBuf::from(&path);
     if !target.exists() {
-        app_logger::log_error(
+        app_logger::log_info(
             &app,
-            "filesystem.artifact.delete.failed",
-            format!("path={}, error=文件不存在", path),
+            "filesystem.artifact.delete.skipped",
+            format!("path={}, reason=文件已不存在", path),
         );
-        return Err(to_user_error(format!("文件不存在：{}", path)));
+        return Ok(());
     }
     if !target.is_file() {
         app_logger::log_error(
@@ -254,6 +258,13 @@ pub fn delete_build_artifact(app: AppHandle, path: String) -> AppResult<()> {
         format!("path={}", path),
     );
     Ok(())
+}
+
+fn nearest_existing_parent(path: &Path) -> Option<PathBuf> {
+    path.ancestors()
+        .skip(1)
+        .find(|candidate| candidate.exists())
+        .map(Path::to_path_buf)
 }
 
 fn is_ignored_dir(path: &Path) -> bool {

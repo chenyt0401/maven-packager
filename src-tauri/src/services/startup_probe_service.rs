@@ -65,8 +65,22 @@ pub fn run_startup_probe(
             ever_seen_process_alive = true;
         }
 
+        if log_result.failure_matched {
+            emit_log_excerpt(on_log, &log_result.content);
+        }
+
+        if let Some(log_path) = &detected_log_path {
+            let tail_cmd = format!("tail -n 50 {} 2>/dev/null || true", shell_quote(log_path));
+            if let Ok(result) = conn.execute_with_cancel(&tail_cmd, || is_cancelled()) {
+                for line in result.output.lines() {
+                    on_log(line);
+                }
+            }
+        }
+
         if let Some(process_probe) = &config.process_probe {
             if process_probe.enabled && ever_seen_process_alive && !process_alive {
+                emit_log_excerpt(on_log, &log_result.content);
                 return Ok(ProbeResult {
                     success: false,
                     reason: "启动失败：本次探针曾确认进程存活，但随后该进程已退出。".to_string(),
@@ -106,19 +120,9 @@ pub fn run_startup_probe(
             log_success_matched = true;
         }
 
-        if let Some(log_path) = &detected_log_path {
-            let tail_cmd = format!("tail -n 50 {} 2>/dev/null || true", shell_quote(log_path));
-            if let Ok(result) = conn.execute_with_cancel(&tail_cmd, || is_cancelled()) {
-                for line in result.output.lines() {
-                    on_log(line);
-                }
-            }
-        }
-
         let success = evaluate_success(
             config,
             process_alive,
-            ever_seen_process_alive,
             port_success_count,
             http_success_count,
             log_success_matched,
@@ -169,6 +173,7 @@ pub struct ProbeContext {
     pub remote_artifact_name: String,
     pub remote_artifact_base_name: String,
     pub default_pid_file: String,
+    pub deploy_log_name: String,
     pub deploy_log_path: String,
     pub log_path_file: String,
     pub custom_log_path: Option<String>,
@@ -192,17 +197,13 @@ impl ProbeContext {
             .rsplit_once('.')
             .map(|(name, _)| name)
             .unwrap_or(remote_artifact_name);
+        let today = chrono::Local::now().format("%Y%m%d").to_string();
+        let deploy_log_name = match log_naming_mode {
+            "fixed" => log_name.unwrap_or(base_name).to_string(),
+            _ => format!("{}-{}", base_name, today),
+        };
         let deploy_log_path = match log_naming_mode {
-            "fixed" => {
-                let name = log_name.unwrap_or(base_name);
-                format!("{}/logs/{}.log", remote_deploy_path, name)
-            }
-            _ => format!(
-                "{}/logs/{}-{}.log",
-                remote_deploy_path,
-                base_name,
-                chrono::Local::now().format("%Y%m%d")
-            ),
+            _ => format!("{}/logs/{}.log", remote_deploy_path, deploy_log_name),
         };
         Self {
             remote_deploy_path: remote_deploy_path.to_string(),
@@ -210,6 +211,7 @@ impl ProbeContext {
             remote_artifact_name: remote_artifact_name.to_string(),
             remote_artifact_base_name: base_name.to_string(),
             default_pid_file: format!("{}/{}.pid", remote_deploy_path, base_name),
+            deploy_log_name,
             deploy_log_path,
             log_path_file: format!("{}/{}.log.path", remote_deploy_path, base_name),
             custom_log_path: custom_log_path.map(|s| s.to_string()),
@@ -231,7 +233,7 @@ fn resolve_initial_log_path(config: &StartupProbeConfig, context: &ProbeContext)
     }
 
     if let Some(custom) = &context.custom_log_path {
-        return Some(expand_probe_tokens(custom, context));
+        return Some(resolve_probe_log_file(custom, context));
     }
     if context.enable_deploy_log {
         return Some(context.deploy_log_path.clone());
@@ -481,6 +483,20 @@ struct LogCheckResult {
     success_matched: bool,
     failure_matched: bool,
     failure_keyword: String,
+    content: String,
+}
+
+fn emit_log_excerpt(on_log: &dyn Fn(&str), content: &str) {
+    if content.trim().is_empty() {
+        return;
+    }
+    on_log("===== 启动失败日志片段 =====");
+    let lines: Vec<&str> = content.lines().collect();
+    let start = lines.len().saturating_sub(120);
+    for line in &lines[start..] {
+        on_log(line);
+    }
+    on_log("===== 启动失败日志片段结束 =====");
 }
 
 fn check_log_probe(
@@ -497,6 +513,7 @@ fn check_log_probe(
                 success_matched: false,
                 failure_matched: false,
                 failure_keyword: String::new(),
+                content: String::new(),
             }
         }
     };
@@ -523,23 +540,12 @@ fn check_log_probe(
                 success_matched: false,
                 failure_matched: false,
                 failure_keyword: String::new(),
+                content: String::new(),
             };
         }
     };
 
-    let cmd = if let Some(offset) = context.log_offset_before_start {
-        if offset > 0 {
-            format!(
-                "tail -c +{} {} 2>/dev/null || true",
-                offset + 1,
-                shell_quote(&log_path)
-            )
-        } else {
-            format!("tail -n 500 {} 2>/dev/null || true", shell_quote(&log_path))
-        }
-    } else {
-        format!("tail -n 500 {} 2>/dev/null || true", shell_quote(&log_path))
-    };
+    let cmd = format!("tail -n 500 {} 2>/dev/null || true", shell_quote(&log_path));
     let content = match conn.execute_with_cancel(&cmd, || false) {
         Ok(result) => result.output,
         Err(_) => {
@@ -554,6 +560,7 @@ fn check_log_probe(
                 success_matched: false,
                 failure_matched: false,
                 failure_keyword: String::new(),
+                content: String::new(),
             };
         }
     };
@@ -633,6 +640,7 @@ fn check_log_probe(
         success_matched,
         failure_matched,
         failure_keyword,
+        content,
     }
 }
 
@@ -696,7 +704,6 @@ fn remote_file_exists(conn: &mut SshConnection, path: &str) -> bool {
 fn evaluate_success(
     config: &StartupProbeConfig,
     process_alive: bool,
-    ever_seen_process_alive: bool,
     port_success_count: u32,
     http_success_count: u32,
     log_success_matched: bool,
@@ -716,13 +723,18 @@ fn evaluate_success(
         .as_ref()
         .map(|p| p.enabled)
         .unwrap_or(false);
+    let log_success_required = config
+        .log_probe
+        .as_ref()
+        .map(|p| p.enabled && !p.success_patterns.is_empty())
+        .unwrap_or(false);
     let has_process = config
         .process_probe
         .as_ref()
         .map(|p| p.enabled)
         .unwrap_or(false);
 
-    let process_ok = !has_process || process_alive || !ever_seen_process_alive;
+    let process_ok = !has_process || process_alive;
 
     if has_http && http_success_count > 0 {
         let required = config
@@ -730,7 +742,7 @@ fn evaluate_success(
             .as_ref()
             .map(|p| p.consecutive_successes)
             .unwrap_or(2);
-        if has_log && config.success_policy == "all" {
+        if has_log && (config.success_policy == "all" || log_success_required) {
             if process_ok && http_success_count >= required && log_success_matched {
                 return Some("HTTP 健康检查成功且日志出现启动成功关键字".to_string());
             }
@@ -745,7 +757,7 @@ fn evaluate_success(
             .as_ref()
             .map(|p| p.consecutive_successes)
             .unwrap_or(2);
-        if has_log && config.success_policy == "all" {
+        if has_log && (config.success_policy == "all" || log_success_required) {
             if process_ok && port_success_count >= required && log_success_matched {
                 return Some("端口已监听且日志出现启动成功关键字".to_string());
             }
@@ -767,13 +779,52 @@ fn expand_probe_tokens(value: &str, context: &ProbeContext) -> String {
     let now = chrono::Local::now();
     let today = now.format("%Y%m%d").to_string();
     let timestamp = now.format("%Y%m%d%H%M%S").to_string();
+    let artifact_base_name = context
+        .artifact_name
+        .rsplit_once('.')
+        .map(|(name, _)| name)
+        .unwrap_or(&context.artifact_name);
     value
+        .replace(
+            "${remoteArtifactName%.*}",
+            &context.remote_artifact_base_name,
+        )
+        .replace("${artifactName%.*}", artifact_base_name)
         .replace("${remoteDeployPath}", &context.remote_deploy_path)
         .replace("${artifactName}", &context.artifact_name)
         .replace("${remoteArtifactName}", &context.remote_artifact_name)
+        .replace(
+            "${remoteArtifactBaseName}",
+            &context.remote_artifact_base_name,
+        )
         .replace("${date}", &today)
         .replace("${timestamp}", &timestamp)
-        .replace("${logName}", &context.deploy_log_path)
+        .replace("${logName}", &context.deploy_log_name)
+        .replace("${logFile}", &context.deploy_log_path)
+        .replace("${logPathFile}", &context.log_path_file)
+        .replace("${pidFile}", &context.default_pid_file)
+}
+
+fn resolve_probe_log_file(value: &str, context: &ProbeContext) -> String {
+    let resolved = expand_probe_tokens(value, context);
+    if is_explicit_log_file(&resolved) {
+        return resolved;
+    }
+
+    format!(
+        "{}/{}.log",
+        resolved.trim_end_matches('/'),
+        context.deploy_log_name
+    )
+}
+
+fn is_explicit_log_file(path: &str) -> bool {
+    path.trim_end()
+        .rsplit_once('/')
+        .map(|(_, name)| name)
+        .unwrap_or(path)
+        .to_ascii_lowercase()
+        .ends_with(".log")
 }
 
 fn shell_quote(value: &str) -> String {
@@ -825,6 +876,7 @@ fn create_default_startup_probe() -> StartupProbeConfig {
                 "APPLICATION FAILED TO START".to_string(),
                 "Application run failed".to_string(),
                 "Port already in use".to_string(),
+                "Web server failed to start".to_string(),
                 "Address already in use".to_string(),
                 "BindException".to_string(),
                 "OutOfMemoryError".to_string(),

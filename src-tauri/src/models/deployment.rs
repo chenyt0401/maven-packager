@@ -362,6 +362,7 @@ fn default_failure_keywords() -> Vec<String> {
         "APPLICATION FAILED TO START".to_string(),
         "Application run failed".to_string(),
         "Port already in use".to_string(),
+        "Web server failed to start".to_string(),
         "Address already in use".to_string(),
         "BindException".to_string(),
         "OutOfMemoryError".to_string(),

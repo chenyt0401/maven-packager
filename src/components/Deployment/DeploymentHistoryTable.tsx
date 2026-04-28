@@ -1,17 +1,17 @@
 import {
-  Button,
-  Descriptions,
-  Empty,
-  Input,
-  Modal,
-  Popconfirm,
-  Progress,
-  Select,
-  Space,
-  Table,
-  Tag,
-  Tooltip,
-  Typography
+    Button,
+    Descriptions,
+    Empty,
+    Input,
+    Modal,
+    Popconfirm,
+    Progress,
+    Select,
+    Space,
+    Table,
+    Tag,
+    Tooltip,
+    Typography
 } from 'antd'
 import {CopyOutlined, DeleteOutlined, DownloadOutlined, FullscreenOutlined, PlayCircleOutlined} from '@ant-design/icons'
 import type {ColumnsType} from 'antd/es/table'
@@ -172,8 +172,9 @@ export function DeploymentHistoryTable() {
     },
     {
       title: '部署对象',
+      width: 280,
       render: (_, record) => (
-        <Space direction="vertical" size={0} className="artifact-item">
+        <Space direction="vertical" size={0} className="artifact-item deployment-history-object">
           <Text strong ellipsis title={record.deploymentProfileName ?? record.deploymentProfileId}>
             {record.deploymentProfileName ?? record.deploymentProfileId}
           </Text>
@@ -209,9 +210,10 @@ export function DeploymentHistoryTable() {
     },
     {
       title: '操作',
-      width: 128,
+      width: 132,
+      fixed: 'right',
       render: (_, record) => (
-        <Space wrap>
+        <Space className="deployment-history-actions">
           <Tooltip title="重跑部署">
             <Button
               size="small"
@@ -264,12 +266,15 @@ export function DeploymentHistoryTable() {
 
   const table = (large = false) => (
     <Table
+      className="deployment-history-table"
       rowKey="id"
       size={large ? 'middle' : 'small'}
+      tableLayout="fixed"
       columns={columns}
       dataSource={deploymentTasks}
       locale={{emptyText: <Empty description="暂无部署记录" image={Empty.PRESENTED_IMAGE_SIMPLE} />}}
       pagination={{pageSize: large ? 12 : 6}}
+      scroll={{x: 820}}
     />
   )
 
@@ -347,9 +352,12 @@ export function DeploymentHistoryTable() {
               ) : null}
             </Descriptions>
             <Table
+              className="deployment-history-table"
               style={{marginTop: 16}}
               rowKey="key"
               size="small"
+              tableLayout="fixed"
+              scroll={{x: 840}}
               pagination={false}
               dataSource={openTask.stages}
               columns={[
@@ -381,8 +389,9 @@ export function DeploymentHistoryTable() {
                 },
                 {
                   title: '结果',
+                  width: 290,
                   render: (_, stage) => (
-                    <Space direction="vertical" size={2}>
+                    <Space direction="vertical" size={2} className="deployment-history-result">
                       <span>{stage.message ?? '-'}</span>
                       {stage.probeStatuses && stage.probeStatuses.length > 0 ? (
                         <div style={{marginTop: 4}}>

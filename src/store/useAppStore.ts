@@ -993,12 +993,24 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   removeArtifact: async (path: string) => {
     await api.deleteBuildArtifact(path)
+    const currentState = get()
+    const changedHistoryRecords: BuildHistoryRecord[] = []
+    const nextHistory = currentState.history.map((record) => {
+      const nextArtifacts = record.artifacts?.filter((artifact) => artifact.path !== path)
+      if ((nextArtifacts?.length ?? 0) === (record.artifacts?.length ?? 0)) {
+        return record
+      }
+      const nextRecord = {
+        ...record,
+        artifacts: nextArtifacts ?? [],
+      }
+      changedHistoryRecords.push(nextRecord)
+      return nextRecord
+    })
     set((state) => ({
       artifacts: state.artifacts.filter((artifact) => artifact.path !== path),
-      history: state.history.map((record) => ({
-        ...record,
-        artifacts: record.artifacts?.filter((artifact) => artifact.path !== path),
-      })),
+      history: nextHistory,
     }))
+    await Promise.all(changedHistoryRecords.map((record) => api.saveBuildHistory(record)))
   },
 }))
