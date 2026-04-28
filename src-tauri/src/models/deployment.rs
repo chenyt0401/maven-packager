@@ -297,6 +297,18 @@ pub struct ProbeStatusEvent {
     pub probe_statuses: Vec<ProbeStatus>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UploadProgressEvent {
+    pub task_id: String,
+    pub stage_key: String,
+    pub percent: f64,
+    pub uploaded_bytes: u64,
+    pub total_bytes: u64,
+    pub speed_bytes_per_second: Option<u64>,
+    pub message: String,
+}
+
 fn default_true() -> bool {
     true
 }

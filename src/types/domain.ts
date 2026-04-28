@@ -336,6 +336,7 @@ export type DeployStepType =
   | 'http_check'
   | 'log_check'
   | 'upload_file'
+  | 'startup_probe'
 
 export type DeployFailureStrategy = 'stop' | 'continue' | 'rollback'
 
@@ -512,7 +513,7 @@ export interface DeploymentTask {
   moduleId: string
   artifactPath: string
   artifactName: string
-  status: 'pending' | 'uploading' | 'stopping' | 'starting' | 'checking' | 'success' | 'failed' | 'cancelled'
+  status: 'pending' | 'uploading' | 'stopping' | 'starting' | 'checking' | 'waiting' | 'success' | 'failed' | 'timeout' | 'cancelled'
   log: string[]
   stages: DeploymentStage[]
   createdAt: string
@@ -536,4 +537,14 @@ export interface DeploymentLogEvent {
   taskId: string
   stageKey?: string
   line: string
+}
+
+export interface UploadProgressEvent {
+  taskId: string
+  stageKey: string
+  percent: number
+  uploadedBytes: number
+  totalBytes: number
+  speedBytesPerSecond?: number
+  message: string
 }

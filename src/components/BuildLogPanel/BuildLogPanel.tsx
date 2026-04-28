@@ -1,14 +1,15 @@
 import {
-  CopyOutlined,
-  DeleteOutlined,
-  DownloadOutlined,
-  FullscreenOutlined,
-  PauseCircleOutlined,
-  PlayCircleOutlined
+    CopyOutlined,
+    DeleteOutlined,
+    DownloadOutlined,
+    FullscreenOutlined,
+    PauseCircleOutlined,
+    PlayCircleOutlined
 } from '@ant-design/icons'
 import {Button, Card, Input, List, Modal, Radio, Select, Space, Tag, Tooltip, Typography} from 'antd'
 import {useEffect, useRef, useState} from 'react'
 import {useAppStore} from '../../store/useAppStore'
+import {useDeploymentLogStore} from '../../store/useDeploymentLogStore'
 import {useNavigationStore} from '../../store/navigationStore'
 import {useWorkflowStore} from '../../store/useWorkflowStore'
 import type {BuildDiagnosis, BuildLogEvent, BuildStatus} from '../../types/domain'
@@ -107,7 +108,7 @@ export function BuildLogPanel() {
 
   // Deployment logs
   const currentDeploymentTask = useWorkflowStore((state) => state.currentDeploymentTask)
-  const deploymentLogsByTaskId = useWorkflowStore((state) => state.deploymentLogsByTaskId)
+  const deploymentLogsByTaskId = useDeploymentLogStore((state) => state.logsByTaskId)
 
   const panelRef = useRef<HTMLDivElement>(null)
   const modalPanelRef = useRef<HTMLDivElement>(null)

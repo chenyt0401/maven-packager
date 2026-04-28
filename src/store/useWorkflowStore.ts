@@ -1,7 +1,7 @@
 import {create} from 'zustand'
 import {api} from '../services/tauri-api'
+import {useDeploymentLogStore} from './useDeploymentLogStore'
 import type {
-  DeploymentLogEvent,
   DeploymentProfile,
   DeploymentStage,
   DeploymentTask,
@@ -19,7 +19,6 @@ interface WorkflowState {
   deploymentProfiles: DeploymentProfile[]
   deploymentTasks: DeploymentTask[]
   currentDeploymentTask?: DeploymentTask
-  deploymentLogsByTaskId: Record<string, string[]>
   loading: boolean
   error?: string
   initialize: () => Promise<void>
@@ -33,7 +32,6 @@ interface WorkflowState {
   refreshDeploymentData: () => Promise<void>
   startDeployment: (profileId: string, serverId: string, artifactPath: string, buildTaskId?: string) => Promise<void>
   cancelDeployment: (taskId: string) => Promise<void>
-  appendDeploymentLog: (event: DeploymentLogEvent) => void
   updateDeploymentTask: (task: DeploymentTask) => void
   finishDeploymentTask: (task: DeploymentTask) => void
   deleteDeploymentTask: (taskId: string) => Promise<void>
@@ -79,14 +77,13 @@ const createPendingDeploymentStages = (profile?: DeploymentProfile): DeploymentS
 }
 
 const isDeploymentTaskRunning = (task?: DeploymentTask) =>
-  Boolean(task && !['success', 'failed', 'cancelled'].includes(task.status))
+  Boolean(task && !['success', 'failed', 'timeout', 'cancelled'].includes(task.status))
 
 export const useWorkflowStore = create<WorkflowState>((set, get) => ({
   dependencyLoading: false,
   serverProfiles: [],
   deploymentProfiles: [],
   deploymentTasks: [],
-  deploymentLogsByTaskId: {},
   loading: false,
 
   initialize: async () => {
@@ -204,7 +201,7 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
         localArtifactPath: artifactPath,
         buildTaskId,
       })
-      set((state) => ({
+      set(() => ({
         currentDeploymentTask: {
           id: taskId,
           deploymentProfileId: profileId,
@@ -217,11 +214,11 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
           stages: createPendingDeploymentStages(profile),
           createdAt: new Date().toISOString(),
         },
-        deploymentLogsByTaskId: {
-          ...state.deploymentLogsByTaskId,
-          [taskId]: [`${new Date().toLocaleTimeString()} 已提交部署任务`],
-        },
       }))
+      useDeploymentLogStore.getState().appendLog({
+        taskId,
+        line: `${new Date().toLocaleTimeString()} 已提交部署任务`,
+      })
     } catch (error) {
       set({error: getErrorMessage(error)})
     }
@@ -230,34 +227,21 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
   cancelDeployment: async (taskId) => {
     try {
       await api.cancelDeployment(taskId)
-      set((state) => ({
-        deploymentLogsByTaskId: {
-          ...state.deploymentLogsByTaskId,
-          [taskId]: [
-            ...(state.deploymentLogsByTaskId[taskId] ?? []),
-            `${new Date().toLocaleTimeString()} 已请求停止部署`,
-          ].slice(-500),
-        },
-      }))
+      useDeploymentLogStore.getState().appendLog({
+        taskId,
+        line: `${new Date().toLocaleTimeString()} 已请求停止部署`,
+      })
     } catch (error) {
       set({error: getErrorMessage(error)})
     }
   },
 
-  appendDeploymentLog: (event) => {
-    set((state) => ({
-      deploymentLogsByTaskId: {
-        ...state.deploymentLogsByTaskId,
-        [event.taskId]: [...(state.deploymentLogsByTaskId[event.taskId] ?? []), event.line].slice(-500),
-      },
-    }))
-  },
-
   updateDeploymentTask: (task) => {
-    set((state) => ({
-      currentDeploymentTask: state.currentDeploymentTask?.id === task.id ? task : state.currentDeploymentTask,
-      deploymentTasks: sortDeploymentTasks([task, ...state.deploymentTasks.filter((item) => item.id !== task.id)]),
-    }))
+    set((state) => {
+      const isCurrent = state.currentDeploymentTask?.id === task.id
+      if (!isCurrent) return {}
+      return {currentDeploymentTask: task}
+    })
   },
 
   finishDeploymentTask: (task) => {

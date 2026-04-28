@@ -9,6 +9,7 @@ import {
   List,
   Modal,
   Popconfirm,
+  Progress,
   Select,
   Space,
   Steps,
@@ -32,12 +33,13 @@ import {
   SaveOutlined,
   StopOutlined,
 } from '@ant-design/icons'
-import {useEffect, useMemo, useState} from 'react'
+import {memo, useEffect, useMemo, useState} from 'react'
 import {DeploymentHistoryTable} from './DeploymentHistoryTable'
 import {findDeployableArtifacts, flattenModules, moduleLabel,} from '../../services/deploymentTopologyService'
 import {api, selectLocalFile} from '../../services/tauri-api'
 import {useAppStore} from '../../store/useAppStore'
 import {useNavigationStore} from '../../store/navigationStore'
+import {useUploadProgressStore} from '../../store/useUploadProgressStore'
 import {useWorkflowStore} from '../../store/useWorkflowStore'
 import type {
   BackupConfig,
@@ -395,13 +397,15 @@ const deploymentStageStatus = (status: DeploymentStage['status']) => {
 }
 
 const deploymentTaskFinished = (status?: string) =>
-  Boolean(status && ['success', 'failed', 'cancelled'].includes(status))
+  Boolean(status && ['success', 'failed', 'timeout', 'cancelled'].includes(status))
 
 const deploymentTaskLabel = (status: string) => {
   switch (status) {
     case 'success': return '部署完成'
     case 'failed': return '部署失败'
+    case 'timeout': return '部署超时'
     case 'cancelled': return '已停止'
+    case 'waiting': return '等待中'
     default: return '部署中'
   }
 }
@@ -410,7 +414,9 @@ const deploymentTaskColor = (status: string) => {
   switch (status) {
     case 'success': return 'green'
     case 'failed': return 'red'
+    case 'timeout': return 'red'
     case 'cancelled': return 'orange'
+    case 'waiting': return 'processing'
     default: return 'processing'
   }
 }
@@ -449,6 +455,38 @@ const deploymentStageDescription = (stage: DeploymentStage) => {
   ].filter(Boolean)
   return parts.join(' · ')
 }
+
+const formatUploadBytes = (bytes: number) => {
+  if (bytes >= 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${bytes} B`
+}
+
+const UploadStepDescription = memo(function UploadStepDescription({
+  taskId,
+  stage,
+}: {
+  taskId: string
+  stage: DeploymentStage
+}) {
+  const progress = useUploadProgressStore((state) => state.progressByTaskId[taskId])
+  const isUploading = stage.type === 'upload_file' && (stage.status === 'running' || stage.status === 'pending')
+  if (isUploading && progress && progress.percent < 100) {
+    const speedText = progress.speedBytesPerSecond
+      ? `，${formatUploadBytes(progress.speedBytesPerSecond)}/s`
+      : ''
+    return (
+      <Space direction="vertical" size={2} style={{width: '100%'}}>
+        <Progress percent={Math.floor(progress.percent)} size="small" />
+        <Text type="secondary">
+          {Math.floor(progress.percent)}% · {formatUploadBytes(progress.uploadedBytes)} / {formatUploadBytes(progress.totalBytes)}{speedText}
+        </Text>
+      </Space>
+    )
+  }
+  return <span>{deploymentStageDescription(stage)}</span>
+})
 
 const collectArtifacts = (currentArtifacts: BuildArtifact[], historyArtifacts: BuildArtifact[]) => {
   const all = [...currentArtifacts, ...historyArtifacts]
@@ -2327,7 +2365,7 @@ export function DeploymentCenterPanel() {
                           status: deploymentStageStatus(stage.status),
                           description: (
                             <Space direction="vertical" size={2}>
-                              <span>{deploymentStageDescription(stage)}</span>
+                              <UploadStepDescription taskId={currentDeploymentTask.id} stage={stage} />
                               {stage.probeStatuses && stage.probeStatuses.length > 0 ? (
                                 <div className="probe-status-list">
                                   {stage.probeStatuses.map((ps: ProbeStatus, idx: number) => {

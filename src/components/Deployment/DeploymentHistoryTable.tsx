@@ -16,6 +16,7 @@ import {
 import {CopyOutlined, DeleteOutlined, DownloadOutlined, FullscreenOutlined, PlayCircleOutlined} from '@ant-design/icons'
 import type {ColumnsType} from 'antd/es/table'
 import {useMemo, useRef, useState} from 'react'
+import {useDeploymentLogStore} from '../../store/useDeploymentLogStore'
 import {useWorkflowStore} from '../../store/useWorkflowStore'
 import type {DeploymentStage, DeploymentTask, ProbeStatus} from '../../types/domain'
 
@@ -27,8 +28,10 @@ const statusColor: Record<DeploymentTask['status'], string> = {
   stopping: 'orange',
   starting: 'cyan',
   checking: 'blue',
+  waiting: 'processing',
   success: 'green',
   failed: 'red',
+  timeout: 'red',
   cancelled: 'orange',
 }
 
@@ -39,8 +42,10 @@ const statusLabel = (status: DeploymentTask['status']) => {
     case 'stopping': return '停止中'
     case 'starting': return '执行中'
     case 'checking': return '检测中'
+    case 'waiting': return '等待中'
     case 'success': return '成功'
     case 'failed': return '失败'
+    case 'timeout': return '已超时'
     case 'cancelled': return '已取消'
     default: return status
   }
@@ -148,7 +153,7 @@ const classifyLine = (line: string) => {
 
 export function DeploymentHistoryTable() {
   const deploymentTasks = useWorkflowStore((state) => state.deploymentTasks)
-  const deploymentLogsByTaskId = useWorkflowStore((state) => state.deploymentLogsByTaskId)
+  const deploymentLogsByTaskId = useDeploymentLogStore((state) => state.logsByTaskId)
   const deleteDeploymentTask = useWorkflowStore((state) => state.deleteDeploymentTask)
   const rerunDeployment = useWorkflowStore((state) => state.rerunDeployment)
   const [expanded, setExpanded] = useState(false)
@@ -175,7 +180,7 @@ export function DeploymentHistoryTable() {
           <Text type="secondary" className="artifact-meta" ellipsis title={record.artifactName}>
             {record.serverName ?? record.serverId} · {record.artifactName}
           </Text>
-          {record.status === 'failed' || record.status === 'cancelled' ? (
+          {record.status === 'failed' || record.status === 'timeout' || record.status === 'cancelled' ? (
             <Text type="danger" className="artifact-meta" ellipsis title={getFailureReason(record)}>
               {getFailureReason(record)}
             </Text>
@@ -316,7 +321,7 @@ export function DeploymentHistoryTable() {
                 {openTask.artifactPath}
               </Descriptions.Item>
               <Descriptions.Item label="失败原因" span={2}>
-                {['failed', 'cancelled'].includes(openTask.status) ? getFailureReason(openTask) : '-'}
+                {['failed', 'timeout', 'cancelled'].includes(openTask.status) ? getFailureReason(openTask) : '-'}
               </Descriptions.Item>
               {openTask.probeResult ? (
                 <Descriptions.Item label="探针结果" span={2}>

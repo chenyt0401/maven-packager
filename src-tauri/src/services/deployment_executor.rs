@@ -2,6 +2,7 @@ use crate::error::{to_user_error, AppResult};
 use crate::models::deployment::{
     BackupConfig, DeployStep, DeploymentProfile, DeploymentStage, DeploymentTask, ProbeStatus,
     ProbeStatusEvent, RollbackResult, StartDeploymentPayload, StartupProbeConfig,
+    UploadProgressEvent,
 };
 use crate::repositories::deployment_repo;
 use crate::services::ssh_transport_service::SshConnection;
@@ -62,8 +63,8 @@ struct DeploymentContext {
     artifact_name: String,
     remote_artifact_name: String,
     remote_deploy_path: String,
-    service_description: Option<String>,
-    service_alias: Option<String>,
+    _service_description: Option<String>,
+    _service_alias: Option<String>,
     java_bin_path: Option<String>,
     jvm_options: Option<String>,
     spring_profile: Option<String>,
@@ -215,8 +216,8 @@ fn execute_deployment(
         artifact_name: artifact_name.clone(),
         remote_artifact_name,
         remote_deploy_path: normalize_remote_dir(&profile.remote_deploy_path),
-        service_description: profile.service_description.clone(),
-        service_alias: profile.service_alias.clone(),
+        _service_description: profile.service_description.clone(),
+        _service_alias: profile.service_alias.clone(),
         java_bin_path: profile.java_bin_path.clone(),
         jvm_options: profile.jvm_options.clone(),
         spring_profile: profile.spring_profile.clone(),
@@ -948,35 +949,49 @@ fn execute_upload_step(
             .map_err(|_| to_user_error(format!("远程文件已存在且未允许覆盖：{}", remote_path)))?;
     }
 
-    let mut last_upload_percent = 0_u64;
+    let mut last_emit_percent: f64 = -100.0;
+    let mut last_emit_time = Instant::now();
+    let step_id = step.id.clone();
     conn.upload_file_with_progress(
         local,
         &remote_path,
         || is_cancel_requested(app, task_id),
         |uploaded, total, speed_bps| {
             let percent = if total == 0 {
-                100
+                100.0
             } else {
-                ((uploaded.saturating_mul(100)) / total).min(100)
+                ((uploaded as f64) * 100.0 / total as f64).min(100.0)
             };
-            if percent == 100 || percent >= last_upload_percent + 1 {
-                last_upload_percent = percent;
+            let now = Instant::now();
+            let should_emit = percent >= 100.0
+                || percent - last_emit_percent >= 2.0
+                || now.duration_since(last_emit_time) >= Duration::from_millis(200);
+            if should_emit {
+                last_emit_percent = percent;
+                last_emit_time = now;
                 let speed_text = speed_bps
                     .map(|s| format!(", {}", format_speed(s)))
                     .unwrap_or_default();
-                update_stage(
-                    task,
-                    &step.id,
-                    "running",
-                    Some(format!(
-                        "上传进度 {}% ({}/{}){}",
-                        percent,
-                        format_bytes(uploaded),
-                        format_bytes(total),
-                        speed_text
-                    )),
+                let message = format!(
+                    "上传进度 {:.0}% ({}/{}){}",
+                    percent,
+                    format_bytes(uploaded),
+                    format_bytes(total),
+                    speed_text
                 );
-                emit_task_update(app, task);
+                update_stage(task, &step_id, "running", Some(message.clone()));
+                let _ = app.emit(
+                    "deployment_upload_progress",
+                    UploadProgressEvent {
+                        task_id: task_id.to_string(),
+                        stage_key: step_id.clone(),
+                        percent,
+                        uploaded_bytes: uploaded,
+                        total_bytes: total,
+                        speed_bytes_per_second: speed_bps.map(|s| s as u64),
+                        message,
+                    },
+                );
             }
         },
     )?;
@@ -1065,7 +1080,7 @@ fn legacy_steps_from_custom_commands(
             let name = context.log_name.as_deref().unwrap_or(base_name);
             format!("{}/{}.log", log_dir, name)
         }
-        _ => format!("{}/{}-$(date +%Y%m%d%H%M%S).log", log_dir, base_name),
+        _ => format!("{}/{}-$(date +%Y%m%d).log", log_dir, base_name),
     };
     let log_file = context.log_path.as_deref().unwrap_or(&default_log_file);
     let log_path_file = format!("{}/{}.log.path", context.remote_deploy_path, base_name);
@@ -1500,7 +1515,7 @@ fn execute_rollback(
     if context.backup_config.restart_after_rollback && rollback.success == Some(true) {
         let log_dir = format!("{}/logs", context.remote_deploy_path);
         let log_file = format!(
-            "{}/{}-rollback-$(date +%Y%m%d%H%M%S).log",
+            "{}/{}-rollback-$(date +%Y%m%d).log",
             log_dir, base_name
         );
         let log_path_file = format!("{}/{}.log.path", context.remote_deploy_path, base_name);
@@ -1633,7 +1648,7 @@ fn expand_tokens(value: &str, context: &DeploymentContext) -> String {
                 .rsplit_once('.')
                 .map(|(n, _)| n)
                 .unwrap_or(&context.remote_artifact_name),
-            timestamp
+            today
         ),
     };
     let java_bin = context.java_bin_path.as_deref().unwrap_or("java");

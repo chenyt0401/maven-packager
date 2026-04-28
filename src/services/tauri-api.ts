@@ -28,6 +28,7 @@ import type {
   ServerProfile,
   StartBuildPayload,
   StartDeploymentPayload,
+  UploadProgressEvent,
 } from '../types/domain'
 
 type TauriWindow = Window & { __TAURI_INTERNALS__?: unknown }
@@ -251,6 +252,7 @@ export async function registerDeploymentEvents(
   onUpdated: (event: DeploymentTask) => void,
   onFinished: (event: DeploymentTask) => void,
   onProbeStatus?: (event: ProbeStatusEvent) => void,
+  onUploadProgress?: (event: UploadProgressEvent) => void,
 ) {
   if (!isTauriRuntime()) {
     return () => undefined
@@ -270,12 +272,18 @@ export async function registerDeploymentEvents(
         onProbeStatus(event.payload)
       })
     : undefined
+  const unlistenUploadProgress = onUploadProgress
+    ? await listen<UploadProgressEvent>('deployment_upload_progress', (event) => {
+        onUploadProgress(event.payload)
+      })
+    : undefined
 
   return () => {
     unlistenLog()
     unlistenUpdated()
     unlistenFinished()
     unlistenProbeStatus?.()
+    unlistenUploadProgress?.()
   }
 }
 

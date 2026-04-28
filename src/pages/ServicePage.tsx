@@ -3,6 +3,7 @@ import {Button, Card, Descriptions, Empty, Input, Modal, Space, Table, Tag, Typo
 import {useMemo, useState} from 'react'
 import {flattenModules, moduleLabel} from '../services/deploymentTopologyService'
 import {useAppStore} from '../store/useAppStore'
+import {useDeploymentLogStore} from '../store/useDeploymentLogStore'
 import {useNavigationStore} from '../store/navigationStore'
 import {useWorkflowStore} from '../store/useWorkflowStore'
 import type {DeploymentTask} from '../types/domain'
@@ -15,8 +16,10 @@ const statusColor: Record<DeploymentTask['status'], string> = {
   stopping: 'orange',
   starting: 'cyan',
   checking: 'blue',
+  waiting: 'processing',
   success: 'green',
   failed: 'red',
+  timeout: 'red',
   cancelled: 'orange',
 }
 
@@ -27,8 +30,10 @@ const statusLabel = (status: DeploymentTask['status']) => {
     case 'stopping': return '停止中'
     case 'starting': return '启动中'
     case 'checking': return '检查中'
+    case 'waiting': return '等待中'
     case 'success': return '成功'
     case 'failed': return '失败'
+    case 'timeout': return '已超时'
     case 'cancelled': return '已取消'
     default: return status
   }
@@ -42,6 +47,7 @@ const stepTypeLabel = (type?: string) => {
     case 'http_check': return 'HTTP 健康检查'
     case 'log_check': return '日志关键字检测'
     case 'upload_file': return '文件上传'
+    case 'startup_probe': return '启动探针'
     default: return type ?? '-'
   }
 }
@@ -88,7 +94,7 @@ export function ServicePage() {
   const deploymentProfiles = useWorkflowStore((state) => state.deploymentProfiles)
   const serverProfiles = useWorkflowStore((state) => state.serverProfiles)
   const deploymentTasks = useWorkflowStore((state) => state.deploymentTasks)
-  const deploymentLogsByTaskId = useWorkflowStore((state) => state.deploymentLogsByTaskId)
+  const deploymentLogsByTaskId = useDeploymentLogStore((state) => state.logsByTaskId)
   const navigateToDeployment = useNavigationStore((state) => state.navigateToDeployment)
 
   const [openTask, setOpenTask] = useState<DeploymentTask>()

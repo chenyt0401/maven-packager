@@ -4,6 +4,8 @@ import {AppShell} from './app/AppShell'
 import {registerBuildEvents, registerDeploymentEvents} from './services/tauri-api'
 import {useAppStore} from './store/useAppStore'
 import {useWorkflowStore} from './store/useWorkflowStore'
+import {useUploadProgressStore} from './store/useUploadProgressStore'
+import {useDeploymentLogStore} from './store/useDeploymentLogStore'
 import './App.css'
 
 function App() {
@@ -14,14 +16,19 @@ function App() {
   const initializeWorkflow = useWorkflowStore((state) => state.initialize)
   const loadDependencyGraph = useWorkflowStore((state) => state.loadDependencyGraph)
   const clearDependencyGraph = useWorkflowStore((state) => state.clearDependencyGraph)
-  const appendDeploymentLog = useWorkflowStore((state) => state.appendDeploymentLog)
   const updateDeploymentTask = useWorkflowStore((state) => state.updateDeploymentTask)
   const finishDeploymentTask = useWorkflowStore((state) => state.finishDeploymentTask)
   const updateProbeStatuses = useWorkflowStore((state) => state.updateProbeStatuses)
+  const updateUploadProgress = useUploadProgressStore((state) => state.updateProgress)
+  const clearUploadProgress = useUploadProgressStore((state) => state.clearProgress)
+  const appendDeploymentLog = useDeploymentLogStore((state) => state.appendLog)
+  const startLogFlushTimer = useDeploymentLogStore((state) => state.startFlushTimer)
+  const stopLogFlushTimer = useDeploymentLogStore((state) => state.stopFlushTimer)
 
   useEffect(() => {
     initialize()
     void initializeWorkflow()
+    startLogFlushTimer()
 
     let cleanupBuild: (() => void) | undefined
     let cleanupDeployment: (() => void) | undefined
@@ -39,6 +46,20 @@ function App() {
       updateDeploymentTask,
       finishDeploymentTask,
       updateProbeStatuses,
+      (event) => {
+        updateUploadProgress(event.taskId, {
+          taskId: event.taskId,
+          stageKey: event.stageKey,
+          percent: event.percent,
+          uploadedBytes: event.uploadedBytes,
+          totalBytes: event.totalBytes,
+          speedBytesPerSecond: event.speedBytesPerSecond,
+          message: event.message,
+        })
+        if (event.percent >= 100) {
+          clearUploadProgress(event.taskId)
+        }
+      },
     ).then((unlisten) => {
       if (disposed) {
         unlisten()
@@ -51,6 +72,7 @@ function App() {
       disposed = true
       cleanupBuild?.()
       cleanupDeployment?.()
+      stopLogFlushTimer()
     }
   }, [
     appendBuildLog,
@@ -59,8 +81,12 @@ function App() {
     finishDeploymentTask,
     initialize,
     initializeWorkflow,
+    startLogFlushTimer,
+    stopLogFlushTimer,
     updateDeploymentTask,
     updateProbeStatuses,
+    updateUploadProgress,
+    clearUploadProgress,
   ])
 
   useEffect(() => {

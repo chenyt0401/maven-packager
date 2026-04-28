@@ -173,7 +173,7 @@ pub struct ProbeContext {
     pub log_path_file: String,
     pub custom_log_path: Option<String>,
     pub enable_deploy_log: bool,
-    pub log_encoding: String,
+    pub _log_encoding: String,
     pub log_offset_before_start: Option<u64>,
 }
 
@@ -201,7 +201,7 @@ impl ProbeContext {
                 "{}/logs/{}-{}.log",
                 remote_deploy_path,
                 base_name,
-                chrono::Local::now().format("%Y%m%d%H%M%S")
+                chrono::Local::now().format("%Y%m%d")
             ),
         };
         Self {
@@ -214,7 +214,7 @@ impl ProbeContext {
             log_path_file: format!("{}/{}.log.path", remote_deploy_path, base_name),
             custom_log_path: custom_log_path.map(|s| s.to_string()),
             enable_deploy_log,
-            log_encoding: log_encoding.to_string(),
+            _log_encoding: log_encoding.to_string(),
             log_offset_before_start: None,
         }
     }
